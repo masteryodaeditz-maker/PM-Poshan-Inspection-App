@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { InspectionRecord, BlockName, ExportLogEntry, ExportType } from '../types';
 import { INITIAL_BLOCKS } from '../data/mockData';
-import { exportInspectionsCSV, clearAllData, downloadInspectionPhoto, exportPhotosZip, getExportLog } from '../utils/storage';
+import { exportInspectionsCSV, clearAllData, clearPhotosInRange, clearDataInRange, downloadInspectionPhoto, exportPhotosZip, getExportLog } from '../utils/storage';
 import { isDashboardUnlocked, lockDashboard } from '../utils/auth';
 import { PasswordGate } from './PasswordGate';
 import { SchoolDirectory } from './SchoolDirectory';
@@ -39,9 +39,10 @@ const shadows = {
 interface DashboardProps {
   inspections: InspectionRecord[];
   onNewInspectionRequested: () => void;
+  onDataChanged: () => void;
 }
 
-export function Dashboard({ inspections, onNewInspectionRequested }: DashboardProps) {
+export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged }: DashboardProps) {
   const [unlocked, setUnlocked] = useState(() => isDashboardUnlocked());
   const [dashboardView, setDashboardView] = useState<'overview' | 'schools'>('overview');
   const [selectedBlock, setSelectedBlock] = useState<string>("All");
@@ -53,6 +54,11 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
   const [exportLog, setExportLog] = useState<ExportLogEntry[]>([]);
+  const [showClearModal, setShowClearModal] = useState(false);
+  const [clearMode, setClearMode] = useState<'photos' | 'all'>('photos');
+  const [clearStart, setClearStart] = useState<string>('');
+  const [clearEnd, setClearEnd] = useState<string>('');
+  const [clearing, setClearing] = useState(false);
 
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
 
@@ -342,8 +348,8 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
           </button>
 
           <button
-            onClick={() => clearAllData()}
-            title="Clear all data"
+            onClick={() => setShowClearModal(true)}
+            title="Manage / clear data"
             style={{
               padding: "10px 14px",
               background: c.paper,
@@ -1162,6 +1168,121 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
             >
               <X size={20} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Manage / Clear Data Modal */}
+      {showClearModal && (
+        <div
+          onClick={() => !clearing && setShowClearModal(false)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 1000, padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: c.surface, borderRadius: 18, padding: isMobile ? 20 : 28,
+              maxWidth: 460, width: "100%", boxShadow: shadows.md
+            }}
+          >
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: c.ink, margin: "0 0 4px" }}>Manage Data</h3>
+            <p style={{ fontSize: 12, color: c.textSecondary, margin: "0 0 18px" }}>
+              This affects the shared Supabase project for everyone. Export first if you haven't already.
+            </p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", padding: 10, borderRadius: 10, border: `1px solid ${clearMode === 'photos' ? c.forest : c.line}`, background: clearMode === 'photos' ? c.forestSoft : c.paper }}>
+                <input type="radio" checked={clearMode === 'photos'} onChange={() => setClearMode('photos')} style={{ marginTop: 3 }} />
+                <span>
+                  <span style={{ display: "block", fontWeight: 700, fontSize: 13, color: c.ink }}>Delete Photos Only</span>
+                  <span style={{ display: "block", fontSize: 12, color: c.textSecondary }}>Frees up storage. Inspection records, checklist answers, and CSV history all stay intact — just the photo files are removed.</span>
+                </span>
+              </label>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", padding: 10, borderRadius: 10, border: `1px solid ${clearMode === 'all' ? c.terracotta : c.line}`, background: clearMode === 'all' ? c.terracottaSoft : c.paper }}>
+                <input type="radio" checked={clearMode === 'all'} onChange={() => setClearMode('all')} style={{ marginTop: 3 }} />
+                <span>
+                  <span style={{ display: "block", fontWeight: 700, fontSize: 13, color: c.ink }}>Delete Everything</span>
+                  <span style={{ display: "block", fontSize: 12, color: c.textSecondary }}>Removes inspection records and photos in the range below. This also affects Month/Quarter/Year filters and trend charts for that period.</span>
+                </span>
+              </label>
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: c.textSecondary, marginBottom: 8 }}>Date range (leave blank for all time)</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  type="date"
+                  value={clearStart}
+                  max={clearEnd || undefined}
+                  onChange={(e) => setClearStart(e.target.value)}
+                  style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${c.line}`, fontSize: 12, color: c.ink, background: c.paper, flex: 1, minWidth: 130 }}
+                />
+                <span style={{ fontSize: 12, color: c.textFaint }}>to</span>
+                <input
+                  type="date"
+                  value={clearEnd}
+                  min={clearStart || undefined}
+                  onChange={(e) => setClearEnd(e.target.value)}
+                  style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${c.line}`, fontSize: 12, color: c.ink, background: c.paper, flex: 1, minWidth: 130 }}
+                />
+              </div>
+              {!clearStart && !clearEnd && (
+                <div style={{ fontSize: 11, color: c.terracotta, marginTop: 8, fontWeight: 600 }}>
+                  No dates selected — this will affect ALL {clearMode === 'photos' ? 'photos' : 'inspections and photos'}, for all time.
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setShowClearModal(false)}
+                disabled={clearing}
+                style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${c.line}`, background: c.paper, color: c.ink, fontWeight: 600, cursor: clearing ? "wait" : "pointer" }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  const rangeText = clearStart || clearEnd
+                    ? `from ${clearStart || 'the beginning'} to ${clearEnd || 'now'}`
+                    : 'for ALL TIME';
+                  const what = clearMode === 'photos' ? 'photo files' : 'inspection records AND photo files';
+                  const proceed = window.confirm(`Delete ${what} ${rangeText}? This cannot be undone.`);
+                  if (!proceed) return;
+
+                  setClearing(true);
+                  try {
+                    const startISO = clearStart || null;
+                    const endISO = clearEnd || null;
+                    let count = 0;
+                    if (clearMode === 'photos') {
+                      count = await clearPhotosInRange(startISO, endISO);
+                    } else if (!startISO && !endISO) {
+                      // Full wipe, all time — reuses the original full-reset behavior (also clears schools + reloads)
+                      await clearAllData();
+                      return; // clearAllData reloads the page itself
+                    } else {
+                      count = await clearDataInRange(startISO, endISO);
+                    }
+                    setShowClearModal(false);
+                    onDataChanged();
+                    alert(`Done — ${count} item${count === 1 ? '' : 's'} deleted.`);
+                  } catch (e) {
+                    alert(e instanceof Error ? e.message : 'Could not delete. Please try again.');
+                  } finally {
+                    setClearing(false);
+                  }
+                }}
+                disabled={clearing}
+                style={{ padding: "10px 18px", borderRadius: 10, border: "none", background: c.terracotta, color: "#fff", fontWeight: 700, cursor: clearing ? "wait" : "pointer" }}
+              >
+                {clearing ? "Deleting..." : "Delete"}
+              </button>
+            </div>
           </div>
         </div>
       )}
