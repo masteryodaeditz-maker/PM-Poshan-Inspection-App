@@ -88,3 +88,14 @@ export interface BlockStat {
   compliancePercentage: number;
   studentsServedToday: number;
 }
+
+export type ExportType = 'csv' | 'photos';
+
+export interface ExportLogEntry {
+  id: string;
+  exportType: ExportType;
+  exportedAt: string; // ISO string, when the export button was clicked
+  rangeStart: string | null; // ISO date string, null = all time
+  rangeEnd: string | null;
+  recordCount: number;
+}
