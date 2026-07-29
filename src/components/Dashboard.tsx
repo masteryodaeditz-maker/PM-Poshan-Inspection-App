@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   Utensils, Users, ClipboardCheck, AlertCircle, TrendingUp, Download,
   Filter, Search, MapPin, CheckCircle2, X, Calendar, Trash2,
-  Building2, Camera, ArrowUpRight, ShieldCheck, FolderDown, LogOut, LayoutGrid
+  Building2, Camera, ArrowUpRight, ShieldCheck, FolderDown, LogOut, LayoutGrid,
+  UserCheck, AlertTriangle, BarChart3
 } from 'lucide-react';
 import { InspectionRecord, BlockName } from '../types';
 import { INITIAL_BLOCKS } from '../data/mockData';
@@ -48,6 +49,7 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPhoto, setSelectedPhoto] = useState<InspectionRecord | null>(null);
   const [exportingZip, setExportingZip] = useState(false);
+  const [periodFilter, setPeriodFilter] = useState<'7d' | '30d' | '90d' | '12m' | 'all'>('all');
 
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
 
@@ -63,11 +65,30 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
     return <PasswordGate onUnlock={() => setUnlocked(true)} />;
   }
 
-  // Compute live KPIs
-  const totalInspections = inspections.length;
-  const mealsServedCount = inspections.filter(i => i.mealServed === 'yes').length;
-  const missedMealsCount = inspections.filter(i => i.mealServed === 'no').length;
-  const totalStudentsServed = inspections
+  // ---- Period filter (dashboard-wide) ----
+  const PERIOD_LABELS: Record<typeof periodFilter, string> = {
+    '7d': 'Last 7 Days',
+    '30d': 'Last 30 Days',
+    '90d': 'Last 90 Days',
+    '12m': 'Last 12 Months',
+    'all': 'All Time',
+  };
+  const periodCutoff = (() => {
+    if (periodFilter === 'all') return null;
+    const days = periodFilter === '7d' ? 7 : periodFilter === '30d' ? 30 : periodFilter === '90d' ? 90 : 365;
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    return d;
+  })();
+  const periodInspections = periodCutoff
+    ? inspections.filter(i => new Date(i.timestamp) >= periodCutoff)
+    : inspections;
+
+  // Compute live KPIs (period-aware)
+  const totalInspections = periodInspections.length;
+  const mealsServedCount = periodInspections.filter(i => i.mealServed === 'yes').length;
+  const missedMealsCount = periodInspections.filter(i => i.mealServed === 'no').length;
+  const totalStudentsServed = periodInspections
     .filter(i => i.mealServed === 'yes')
     .reduce((acc, curr) => acc + (curr.studentCount || 0), 0);
 
@@ -75,8 +96,73 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
     ? Math.round((mealsServedCount / totalInspections) * 100)
     : 100;
 
-  // Filter inspections
-  const filteredInspections = inspections.filter(i => {
+  const blocksMonitoredCount = new Set(periodInspections.map(i => i.block)).size;
+
+  const activeInspectorsCount = new Set(
+    periodInspections.map(i => (i.inspectorName || '').trim().toLowerCase()).filter(Boolean)
+  ).size;
+
+  const reportingGapSchools = new Set(
+    periodInspections
+      .filter(i => i.submittedSDSEO === 'no' || i.meghSimsDaily === 'no')
+      .map(i => i.schoolName)
+  ).size;
+
+  // "This Week at a Glance" — always trailing 7 days, independent of the period selector,
+  // so it stays meaningful even when someone has "All Time" selected.
+  const last7DaysCutoff = new Date();
+  last7DaysCutoff.setDate(last7DaysCutoff.getDate() - 7);
+  const last7DaysInspections = inspections.filter(i => new Date(i.timestamp) >= last7DaysCutoff);
+  const submissionsLast7Days = last7DaysInspections.length;
+  const photosLast7Days = last7DaysInspections.filter(i => !!i.photoUrl).length;
+
+  // Facilities & reporting compliance percentages (period-aware, only counts inspections
+  // where the field was actually answered, since older records may not have it)
+  const pctYes = (field: keyof InspectionRecord) => {
+    const answered = periodInspections.filter(i => i[field] === 'yes' || i[field] === 'no');
+    if (answered.length === 0) return null;
+    const yes = answered.filter(i => i[field] === 'yes').length;
+    return Math.round((yes / answered.length) * 100);
+  };
+  const facilitiesReporting = [
+    { label: 'Kitchen Shed Functional', pct: pctYes('kitchenShed') },
+    { label: 'Water Supply Functional', pct: pctYes('waterSupply') },
+    { label: 'Kitchen Garden Present', pct: pctYes('kitchenGarden') },
+    { label: 'SDSEO Monthly Form Submitted', pct: pctYes('submittedSDSEO') },
+    { label: 'MeghSIMS Daily Reporting Done', pct: pctYes('meghSimsDaily') },
+  ];
+
+  // Top issue reasons this period
+  const topIssues = (() => {
+    const counts = new Map<string, number>();
+    periodInspections.forEach(i => {
+      if (i.issueCategory) counts.set(i.issueCategory, (counts.get(i.issueCategory) || 0) + 1);
+    });
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+  })();
+
+  // Inspections trend — last 8 weeks, always fixed regardless of the period selector
+  const weeklyTrend = (() => {
+    const weeks: { label: string; count: number }[] = [];
+    for (let w = 7; w >= 0; w--) {
+      const weekEnd = new Date();
+      weekEnd.setDate(weekEnd.getDate() - w * 7);
+      const weekStart = new Date(weekEnd);
+      weekStart.setDate(weekStart.getDate() - 7);
+      const count = inspections.filter(i => {
+        const t = new Date(i.timestamp);
+        return t >= weekStart && t < weekEnd;
+      }).length;
+      weeks.push({ label: `${weekStart.getDate()}/${weekStart.getMonth() + 1}`, count });
+    }
+    return weeks;
+  })();
+  const maxWeeklyCount = Math.max(1, ...weeklyTrend.map(w => w.count));
+
+  // Filter inspections (search/block/status, applied on top of the period filter)
+  const filteredInspections = periodInspections.filter(i => {
     const matchesBlock = selectedBlock === "All" || i.block === selectedBlock;
     const matchesStatus = statusFilter === "All"
       || (statusFilter === "Served" && i.mealServed === 'yes')
@@ -89,9 +175,9 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
     return matchesBlock && matchesStatus && matchesSearch;
   });
 
-  // Calculate block compliance breakdown from real inspection data only
+  // Calculate block compliance breakdown from real inspection data only (period-aware)
   const blockStats = INITIAL_BLOCKS.map(blockName => {
-    const blockInspections = inspections.filter(i => i.block === blockName);
+    const blockInspections = periodInspections.filter(i => i.block === blockName);
     const served = blockInspections.filter(i => i.mealServed === 'yes').length;
     const rate = blockInspections.length > 0
       ? Math.round((served / blockInspections.length) * 100)
@@ -264,12 +350,47 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
         <SchoolDirectory onInspectSchool={() => onNewInspectionRequested()} />
       ) : (
       <>
+      {/* Period Filter */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        marginBottom: isMobile ? 14 : 18,
+        flexWrap: "wrap"
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: c.textSecondary, display: "flex", alignItems: "center", gap: 5 }}>
+          <Calendar size={13} color={c.textSecondary} /> Period:
+        </span>
+        <div style={{ display: "flex", gap: 4, background: c.paper, padding: 4, borderRadius: 10, border: `1px solid ${c.line}`, flexWrap: "wrap" }}>
+          {(['7d', '30d', '90d', '12m', 'all'] as const).map(p => (
+            <button
+              key={p}
+              onClick={() => setPeriodFilter(p)}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 7,
+                fontSize: 12,
+                fontWeight: 600,
+                border: "none",
+                cursor: "pointer",
+                background: periodFilter === p ? c.surface : "transparent",
+                color: periodFilter === p ? c.forest : c.textSecondary,
+                boxShadow: periodFilter === p ? shadows.sm : "none",
+                whiteSpace: "nowrap"
+              }}
+            >
+              {PERIOD_LABELS[p]}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* KPI Cards Grid */}
       <div style={{
         display: "grid",
         gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fit, minmax(220px, 1fr))",
         gap: isMobile ? 10 : 16,
-        marginBottom: isMobile ? 20 : 28
+        marginBottom: isMobile ? 14 : 18
       }}>
         <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
@@ -285,7 +406,7 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
           <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>
             {totalStudentsServed.toLocaleString()}
           </div>
-          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>Across all logged inspections</div>
+          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>{PERIOD_LABELS[periodFilter]}</div>
         </div>
 
         <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
@@ -305,33 +426,73 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
 
         <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-            <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: c.terracottaSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <AlertCircle size={isMobile ? 17 : 20} color={c.terracotta} />
-            </div>
-            {missedMealsCount > 0 && (
-              <span style={{ fontSize: 9, fontWeight: 700, background: c.terracotta, color: "#fff", padding: "2px 6px", borderRadius: 12 }}>
-                Alert
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Quality & Missed</div>
-          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: missedMealsCount > 0 ? c.terracotta : c.ink, letterSpacing: "-0.02em" }}>
-            {missedMealsCount}
-          </div>
-          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>Supply or cook delays</div>
-        </div>
-
-        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
             <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: "rgba(212,175,55,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <ShieldCheck size={isMobile ? 17 : 20} color={c.gold} />
             </div>
           </div>
           <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Blocks Monitored</div>
           <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>
-            6 / 6
+            {blocksMonitoredCount} / {INITIAL_BLOCKS.length}
           </div>
           <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>East Khasi Hills</div>
+        </div>
+
+        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+            <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: "rgba(15,76,58,0.10)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <UserCheck size={isMobile ? 17 : 20} color={c.forest} />
+            </div>
+          </div>
+          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Active Inspectors</div>
+          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>
+            {activeInspectorsCount}
+          </div>
+          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>{PERIOD_LABELS[periodFilter]}</div>
+        </div>
+
+        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+            <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: c.terracottaSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <AlertCircle size={isMobile ? 17 : 20} color={c.terracotta} />
+            </div>
+            {reportingGapSchools > 0 && (
+              <span style={{ fontSize: 9, fontWeight: 700, background: c.terracotta, color: "#fff", padding: "2px 6px", borderRadius: 12 }}>
+                Alert
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Reporting Compliance Gap</div>
+          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: reportingGapSchools > 0 ? c.terracotta : c.ink, letterSpacing: "-0.02em" }}>
+            {reportingGapSchools}
+          </div>
+          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>Schools missing SDSEO/MeghSIMS</div>
+        </div>
+      </div>
+
+      {/* This Week at a Glance — always trailing 7 days, independent of the period filter above */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fit, minmax(220px, 1fr))",
+        gap: isMobile ? 10 : 16,
+        marginBottom: isMobile ? 20 : 28
+      }}>
+        <div style={{ background: c.forestSoft, borderRadius: 16, padding: isMobile ? 12 : 16, border: `1px solid ${c.line}`, display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: c.surface, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <ClipboardCheck size={17} color={c.forest} />
+          </div>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: c.ink, lineHeight: 1.1 }}>{submissionsLast7Days}</div>
+            <div style={{ fontSize: 11, color: c.textSecondary, fontWeight: 600 }}>Submissions, Last 7 Days</div>
+          </div>
+        </div>
+        <div style={{ background: c.forestSoft, borderRadius: 16, padding: isMobile ? 12 : 16, border: `1px solid ${c.line}`, display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: c.surface, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Camera size={17} color={c.forest} />
+          </div>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: c.ink, lineHeight: 1.1 }}>{photosLast7Days}</div>
+            <div style={{ fontSize: 11, color: c.textSecondary, fontWeight: 600 }}>Photos Captured, Last 7 Days</div>
+          </div>
         </div>
       </div>
 
@@ -462,6 +623,101 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
 
       </div>
 
+      {/* Facilities & Reporting Compliance / Top Issues / Trend */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(320px, 1fr))",
+        gap: isMobile ? 14 : 20,
+        marginBottom: isMobile ? 20 : 32
+      }}>
+        {/* Facilities & Reporting Compliance */}
+        <div style={{ background: c.surface, padding: isMobile ? 16 : 24, borderRadius: 18, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <h3 style={{ fontSize: isMobile ? 15 : 16, fontWeight: 700, color: c.ink, margin: 0 }}>Facilities & Reporting Compliance</h3>
+              <p style={{ fontSize: 12, color: c.textSecondary, margin: 0 }}>{PERIOD_LABELS[periodFilter]} • % of answered inspections</p>
+            </div>
+            <ShieldCheck size={18} color={c.forest} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {facilitiesReporting.map((item) => (
+              <div key={item.label}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600, color: c.ink }}>{item.label}</span>
+                  <span style={{ color: item.pct === null ? c.textFaint : c.forest, fontWeight: 700 }}>
+                    {item.pct === null ? "No data yet" : `${item.pct}%`}
+                  </span>
+                </div>
+                <div style={{ width: "100%", height: 8, background: c.mint, borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{
+                    width: item.pct === null ? "0%" : `${item.pct}%`,
+                    height: "100%",
+                    background: item.pct === null ? c.line : item.pct >= 90 ? c.forest : item.pct >= 75 ? c.gold : c.terracotta,
+                    borderRadius: 4,
+                    transition: "width 0.6s cubic-bezier(0.16, 1, 0.3, 1)"
+                  }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Top Issues This Period */}
+        <div style={{ background: c.surface, padding: isMobile ? 16 : 24, borderRadius: 18, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <h3 style={{ fontSize: isMobile ? 15 : 16, fontWeight: 700, color: c.ink, margin: 0 }}>Top Issues This Period</h3>
+              <p style={{ fontSize: 12, color: c.textSecondary, margin: 0 }}>{PERIOD_LABELS[periodFilter]}</p>
+            </div>
+            <AlertTriangle size={18} color={c.terracotta} />
+          </div>
+          {topIssues.length === 0 ? (
+            <div style={{ fontSize: 13, color: c.textFaint, padding: "12px 0" }}>No issues flagged in this period.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {topIssues.map(([issue, count], idx) => (
+                <div key={issue} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 22, height: 22, borderRadius: 6, background: c.terracottaSoft, color: c.terracotta,
+                    fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
+                  }}>
+                    {idx + 1}
+                  </div>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: c.ink, flex: 1 }}>{issue}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: c.textSecondary }}>{count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Inspections Trend — last 8 weeks */}
+        <div style={{ background: c.surface, padding: isMobile ? 16 : 24, borderRadius: 18, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <h3 style={{ fontSize: isMobile ? 15 : 16, fontWeight: 700, color: c.ink, margin: 0 }}>Inspections Trend</h3>
+              <p style={{ fontSize: 12, color: c.textSecondary, margin: 0 }}>Last 8 weeks, week-start date shown</p>
+            </div>
+            <BarChart3 size={18} color={c.forest} />
+          </div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: isMobile ? 6 : 10, height: 100 }}>
+            {weeklyTrend.map((w, idx) => (
+              <div key={idx} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, height: "100%", justifyContent: "flex-end" }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: c.textSecondary }}>{w.count}</span>
+                <div style={{
+                  width: "100%",
+                  height: `${Math.max(4, (w.count / maxWeeklyCount) * 70)}px`,
+                  background: idx === weeklyTrend.length - 1 ? c.forest : c.mint,
+                  borderRadius: 4,
+                  transition: "height 0.6s cubic-bezier(0.16, 1, 0.3, 1)"
+                }} />
+                <span style={{ fontSize: 9, color: c.textFaint }}>{w.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* Filter & Search Bar for Inspections Log */}
       <div style={{
         background: c.surface,
@@ -482,7 +738,7 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
           <div>
             <h3 style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: c.ink, margin: 0 }}>Official Inspection Logs</h3>
             <p style={{ fontSize: 12, color: c.textSecondary, margin: "2px 0 0 0" }}>
-              Showing {filteredInspections.length} of {inspections.length} total entries
+              Showing {filteredInspections.length} of {periodInspections.length} entries ({PERIOD_LABELS[periodFilter]})
             </p>
           </div>
 
