@@ -5,9 +5,9 @@ import {
   Building2, Camera, ArrowUpRight, ShieldCheck, FolderDown, LogOut, LayoutGrid,
   UserCheck, AlertTriangle, BarChart3
 } from 'lucide-react';
-import { InspectionRecord, BlockName } from '../types';
+import { InspectionRecord, BlockName, ExportLogEntry, ExportType } from '../types';
 import { INITIAL_BLOCKS } from '../data/mockData';
-import { exportInspectionsCSV, clearAllData, downloadInspectionPhoto, exportPhotosZip } from '../utils/storage';
+import { exportInspectionsCSV, clearAllData, downloadInspectionPhoto, exportPhotosZip, getExportLog } from '../utils/storage';
 import { isDashboardUnlocked, lockDashboard } from '../utils/auth';
 import { PasswordGate } from './PasswordGate';
 import { SchoolDirectory } from './SchoolDirectory';
@@ -49,7 +49,10 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPhoto, setSelectedPhoto] = useState<InspectionRecord | null>(null);
   const [exportingZip, setExportingZip] = useState(false);
-  const [periodFilter, setPeriodFilter] = useState<'7d' | '30d' | '90d' | '12m' | 'all'>('all');
+  const [periodFilter, setPeriodFilter] = useState<'7d' | '30d' | '90d' | '12m' | 'all' | 'custom'>('all');
+  const [customStart, setCustomStart] = useState<string>('');
+  const [customEnd, setCustomEnd] = useState<string>('');
+  const [exportLog, setExportLog] = useState<ExportLogEntry[]>([]);
 
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
 
@@ -59,6 +62,10 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    getExportLog().then(setExportLog).catch((e) => console.error('Error loading export log', e));
   }, []);
 
   if (!unlocked) {
@@ -72,17 +79,26 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
     '90d': 'Last 90 Days',
     '12m': 'Last 12 Months',
     'all': 'All Time',
+    'custom': 'Custom Range',
   };
-  const periodCutoff = (() => {
+  const periodStartDate: Date | null = (() => {
     if (periodFilter === 'all') return null;
+    if (periodFilter === 'custom') return customStart ? new Date(`${customStart}T00:00:00`) : null;
     const days = periodFilter === '7d' ? 7 : periodFilter === '30d' ? 30 : periodFilter === '90d' ? 90 : 365;
     const d = new Date();
     d.setDate(d.getDate() - days);
     return d;
   })();
-  const periodInspections = periodCutoff
-    ? inspections.filter(i => new Date(i.timestamp) >= periodCutoff)
-    : inspections;
+  const periodEndDate: Date | null = periodFilter === 'custom' && customEnd ? new Date(`${customEnd}T23:59:59`) : null;
+  const periodInspections = inspections.filter(i => {
+    const t = new Date(i.timestamp);
+    if (periodStartDate && t < periodStartDate) return false;
+    if (periodEndDate && t > periodEndDate) return false;
+    return true;
+  });
+  // ISO date strings used for export filenames, the export log, and the on-screen range label
+  const periodRangeStartISO = periodFilter === 'all' ? null : periodFilter === 'custom' ? (customStart || null) : (periodStartDate ? periodStartDate.toISOString().split('T')[0] : null);
+  const periodRangeEndISO = periodFilter === 'all' ? null : periodFilter === 'custom' ? (customEnd || null) : new Date().toISOString().split('T')[0];
 
   // Compute live KPIs (period-aware)
   const totalInspections = periodInspections.length;
@@ -161,6 +177,43 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
   })();
   const maxWeeklyCount = Math.max(1, ...weeklyTrend.map(w => w.count));
 
+  // Weekly Export Tracker — "was this week's data exported yet?" for the last 8 weeks
+  const findLatestExport = (type: ExportType, weekStart: Date, weekEnd: Date): ExportLogEntry | null => {
+    const matches = exportLog.filter(e => {
+      if (e.exportType !== type) return false;
+      if (!e.rangeStart && !e.rangeEnd) return true; // an "All Time" export covers every week
+      const eStart = e.rangeStart ? new Date(`${e.rangeStart}T00:00:00`) : new Date(0);
+      const eEnd = e.rangeEnd ? new Date(`${e.rangeEnd}T23:59:59`) : new Date();
+      return eStart <= weekEnd && eEnd >= weekStart;
+    });
+    if (matches.length === 0) return null;
+    return matches.reduce((latest, e) => (new Date(e.exportedAt) > new Date(latest.exportedAt) ? e : latest));
+  };
+  const weeklyExportTracker = (() => {
+    const weeks: {
+      label: string; weekStart: Date; weekEnd: Date; count: number;
+      csvExport: ExportLogEntry | null; photosExport: ExportLogEntry | null;
+    }[] = [];
+    for (let w = 7; w >= 0; w--) {
+      const weekEnd = new Date();
+      weekEnd.setDate(weekEnd.getDate() - w * 7);
+      const weekStart = new Date(weekEnd);
+      weekStart.setDate(weekStart.getDate() - 7);
+      const count = inspections.filter(i => {
+        const t = new Date(i.timestamp);
+        return t >= weekStart && t < weekEnd;
+      }).length;
+      const fmt = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      weeks.push({
+        label: `${fmt(weekStart)} – ${fmt(weekEnd)}`,
+        weekStart, weekEnd, count,
+        csvExport: findLatestExport('csv', weekStart, weekEnd),
+        photosExport: findLatestExport('photos', weekStart, weekEnd),
+      });
+    }
+    return weeks.reverse(); // most recent week first
+  })();
+
   // Filter inspections (search/block/status, applied on top of the period filter)
   const filteredInspections = periodInspections.filter(i => {
     const matchesBlock = selectedBlock === "All" || i.block === selectedBlock;
@@ -214,7 +267,18 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
 
         <div style={{ display: "flex", gap: 8, width: isMobile ? "100%" : "auto", flexWrap: "wrap" }}>
           <button
-            onClick={() => exportInspectionsCSV(inspections)}
+            onClick={() => {
+              const rangeText = periodRangeStartISO || periodRangeEndISO
+                ? `from ${periodRangeStartISO || 'the beginning'} to ${periodRangeEndISO || 'now'}`
+                : 'for all time';
+              const blockText = selectedBlock !== 'All' ? `, Block: ${selectedBlock}` : '';
+              const proceed = window.confirm(
+                `Export ${filteredInspections.length} inspections ${rangeText}${blockText}?`
+              );
+              if (!proceed) return;
+              exportInspectionsCSV(filteredInspections, { start: periodRangeStartISO, end: periodRangeEndISO });
+              getExportLog().then(setExportLog).catch(() => {});
+            }}
             style={{
               flex: isMobile ? 1 : "none",
               display: "flex",
@@ -238,9 +302,19 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
 
           <button
             onClick={async () => {
+              const photoCount = filteredInspections.filter(i => !!i.photoUrl).length;
+              const rangeText = periodRangeStartISO || periodRangeEndISO
+                ? `from ${periodRangeStartISO || 'the beginning'} to ${periodRangeEndISO || 'now'}`
+                : 'for all time';
+              const blockText = selectedBlock !== 'All' ? `, Block: ${selectedBlock}` : '';
+              const proceed = window.confirm(
+                `Export ${photoCount} photo${photoCount === 1 ? '' : 's'} ${rangeText}${blockText}?`
+              );
+              if (!proceed) return;
               setExportingZip(true);
               try {
-                await exportPhotosZip(inspections);
+                await exportPhotosZip(filteredInspections, { start: periodRangeStartISO, end: periodRangeEndISO });
+                getExportLog().then(setExportLog).catch(() => {});
               } finally {
                 setExportingZip(false);
               }
@@ -362,7 +436,7 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
           <Calendar size={13} color={c.textSecondary} /> Period:
         </span>
         <div style={{ display: "flex", gap: 4, background: c.paper, padding: 4, borderRadius: 10, border: `1px solid ${c.line}`, flexWrap: "wrap" }}>
-          {(['7d', '30d', '90d', '12m', 'all'] as const).map(p => (
+          {(['7d', '30d', '90d', '12m', 'all', 'custom'] as const).map(p => (
             <button
               key={p}
               onClick={() => setPeriodFilter(p)}
@@ -383,6 +457,29 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
             </button>
           ))}
         </div>
+
+        {periodFilter === 'custom' && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <input
+              type="date"
+              value={customStart}
+              max={customEnd || undefined}
+              onChange={(e) => setCustomStart(e.target.value)}
+              style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${c.line}`, fontSize: 12, color: c.ink, background: c.surface }}
+            />
+            <span style={{ fontSize: 12, color: c.textFaint }}>to</span>
+            <input
+              type="date"
+              value={customEnd}
+              min={customStart || undefined}
+              onChange={(e) => setCustomEnd(e.target.value)}
+              style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${c.line}`, fontSize: 12, color: c.ink, background: c.surface }}
+            />
+            {(!customStart || !customEnd) && (
+              <span style={{ fontSize: 11, color: c.textFaint }}>Pick both dates</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* KPI Cards Grid */}
@@ -715,6 +812,57 @@ export function Dashboard({ inspections, onNewInspectionRequested }: DashboardPr
               </div>
             ))}
           </div>
+        </div>
+      </div>
+
+      {/* Weekly Export Tracker */}
+      <div style={{ background: c.surface, padding: isMobile ? 16 : 24, borderRadius: 18, border: `1px solid ${c.line}`, boxShadow: shadows.sm, marginBottom: isMobile ? 20 : 32 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div>
+            <h3 style={{ fontSize: isMobile ? 15 : 16, fontWeight: 700, color: c.ink, margin: 0 }}>Weekly Export Tracker</h3>
+            <p style={{ fontSize: 12, color: c.textSecondary, margin: 0 }}>Last 8 weeks — what's been downloaded so far</p>
+          </div>
+          <FolderDown size={18} color={c.forest} />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {weeklyExportTracker.map((wk, idx) => (
+            <div key={idx} style={{
+              display: "flex",
+              flexDirection: isMobile ? "column" : "row",
+              alignItems: isMobile ? "flex-start" : "center",
+              justifyContent: "space-between",
+              gap: isMobile ? 6 : 12,
+              padding: "10px 14px",
+              borderRadius: 10,
+              background: idx === 0 ? c.forestSoft : c.paper,
+              border: `1px solid ${c.line}`
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: isMobile ? "auto" : 220 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: c.ink }}>{wk.label}</span>
+                <span style={{ fontSize: 11, color: c.textSecondary }}>{wk.count} inspection{wk.count === 1 ? '' : 's'}</span>
+              </div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20,
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  background: wk.csvExport ? c.mint : c.line,
+                  color: wk.csvExport ? c.forest : c.textFaint
+                }}>
+                  {wk.csvExport ? <CheckCircle2 size={11} /> : <X size={11} />}
+                  CSV {wk.csvExport ? `– ${new Date(wk.csvExport.exportedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'not exported'}
+                </span>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20,
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  background: wk.photosExport ? c.mint : c.line,
+                  color: wk.photosExport ? c.forest : c.textFaint
+                }}>
+                  {wk.photosExport ? <CheckCircle2 size={11} /> : <X size={11} />}
+                  Photos {wk.photosExport ? `– ${new Date(wk.photosExport.exportedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'not exported'}
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
