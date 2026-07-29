@@ -1,7 +1,7 @@
-import { InspectionRecord, SchoolRecord, BlockName, SchoolCategory } from '../types';
+import { InspectionRecord, SchoolRecord, BlockName, SchoolCategory, ExportLogEntry, ExportType } from '../types';
 import { supabase, INSPECTION_PHOTOS_BUCKET } from './supabaseClient';
 
-const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour, plenty for a viewing/export session
+const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24; // 24 hours — covers a full working session / Friday export run
 
 // ---------- DB row <-> app type mapping ----------
 
@@ -303,7 +303,7 @@ export async function getSchools(): Promise<SchoolRecord[]> {
 
 // ---------- CSV export (unchanged shape, extended columns) ----------
 
-export function exportInspectionsCSV(inspections: InspectionRecord[]) {
+export function exportInspectionsCSV(inspections: InspectionRecord[], rangeLabel?: { start: string | null; end: string | null }) {
   const headers = [
     'ID', 'Timestamp', 'Block', 'School Name', 'Category', 'Management Type',
     'Meal Served', 'Students Served', 'Boys', 'Girls', 'Aadhaar Boys', 'Aadhaar Girls',
@@ -356,12 +356,17 @@ export function exportInspectionsCSV(inspections: InspectionRecord[]) {
 
   const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
   const encodedUri = encodeURI(csvContent);
+  const filenameDateSuffix = rangeLabel && (rangeLabel.start || rangeLabel.end)
+    ? `${rangeLabel.start || 'start'}_to_${rangeLabel.end || 'now'}`
+    : new Date().toISOString().split('T')[0];
   const link = document.createElement('a');
   link.setAttribute('href', encodedUri);
-  link.setAttribute('download', `PM_Poshan_Inspections_${new Date().toISOString().split('T')[0]}.csv`);
+  link.setAttribute('download', `PM_Poshan_Inspections_${filenameDateSuffix}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+
+  logExport('csv', rangeLabel?.start ?? null, rangeLabel?.end ?? null, inspections.length).catch(e => console.error('Could not log export', e));
 }
 
 // ---------- Clear all data (Supabase-backed) ----------
@@ -384,6 +389,41 @@ export async function clearAllData() {
   await supabase.from('schools').delete().neq('id', '');
 
   window.location.reload();
+}
+
+// ---------- Export tracking (Weekly Export Tracker on the Dashboard) ----------
+
+export async function logExport(exportType: ExportType, rangeStart: string | null, rangeEnd: string | null, recordCount: number) {
+  const row = {
+    id: `EXP-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 100)}`,
+    export_type: exportType,
+    exported_at: new Date().toISOString(),
+    range_start: rangeStart,
+    range_end: rangeEnd,
+    record_count: recordCount,
+  };
+  const { error } = await supabase.from('export_log').insert(row);
+  if (error) console.error('Error logging export', error);
+}
+
+export async function getExportLog(): Promise<ExportLogEntry[]> {
+  const { data, error } = await supabase
+    .from('export_log')
+    .select('*')
+    .order('exported_at', { ascending: false })
+    .limit(50);
+  if (error) {
+    console.error('Error fetching export log', error);
+    return [];
+  }
+  return (data || []).map((row) => ({
+    id: row.id,
+    exportType: row.export_type as ExportType,
+    exportedAt: row.exported_at,
+    rangeStart: row.range_start,
+    rangeEnd: row.range_end,
+    recordCount: row.record_count,
+  }));
 }
 
 // ---------- Photo download helpers ----------
@@ -419,7 +459,7 @@ export async function downloadInspectionPhoto(inspection: InspectionRecord) {
 }
 
 // Bundle every photo currently in view into a single ZIP for the Friday report.
-export async function exportPhotosZip(inspections: InspectionRecord[]) {
+export async function exportPhotosZip(inspections: InspectionRecord[], rangeLabel?: { start: string | null; end: string | null }) {
   const withPhotos = inspections.filter(i => !!i.photoUrl);
   if (withPhotos.length === 0) {
     alert('No photos to export in the current list.');
@@ -449,11 +489,16 @@ export async function exportPhotosZip(inspections: InspectionRecord[]) {
 
   const content = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(content);
+  const filenameDateSuffix = rangeLabel && (rangeLabel.start || rangeLabel.end)
+    ? `${rangeLabel.start || 'start'}_to_${rangeLabel.end || 'now'}`
+    : new Date().toISOString().split('T')[0];
   const link = document.createElement('a');
   link.href = url;
-  link.download = `PM_Poshan_Photos_${new Date().toISOString().split('T')[0]}.zip`;
+  link.download = `PM_Poshan_Photos_${filenameDateSuffix}.zip`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+
+  await logExport('photos', rangeLabel?.start ?? null, rangeLabel?.end ?? null, withPhotos.length).catch(e => console.error('Could not log export', e));
 }
