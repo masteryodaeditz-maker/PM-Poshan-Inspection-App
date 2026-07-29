@@ -134,6 +134,7 @@ export default function App() {
             <Dashboard
               inspections={inspections}
               onNewInspectionRequested={() => setActiveTab('inspection')}
+              onDataChanged={reloadInspections}
             />
           </>
         )}
