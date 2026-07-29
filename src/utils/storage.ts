@@ -391,6 +391,55 @@ export async function clearAllData() {
   window.location.reload();
 }
 
+// Delete only the photo files for inspections in [startISO, endISO] (either bound can be null =
+// open-ended). Keeps every inspection record — school, attendance, checklist, everything —
+// just clears the photo_path so the record no longer has an attached image.
+export async function clearPhotosInRange(startISO: string | null, endISO: string | null): Promise<number> {
+  let query = supabase.from('inspections').select('id, photo_path').not('photo_path', 'is', null);
+  if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
+  if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not find photos to delete: ${error.message}`);
+
+  const rows = data || [];
+  const paths = rows.map((r) => r.photo_path).filter(Boolean) as string[];
+
+  if (paths.length > 0) {
+    const { error: removeError } = await supabase.storage.from(INSPECTION_PHOTOS_BUCKET).remove(paths);
+    if (removeError) throw new Error(`Could not delete photo files: ${removeError.message}`);
+  }
+  if (rows.length > 0) {
+    const ids = rows.map((r) => r.id);
+    const { error: updateError } = await supabase.from('inspections').update({ photo_path: null }).in('id', ids);
+    if (updateError) throw new Error(`Could not clear photo references: ${updateError.message}`);
+  }
+  return rows.length;
+}
+
+// Delete inspection records (and their photos) in [startISO, endISO]. Leaves the schools
+// table untouched — compliance stats stay as they were computed at the time.
+export async function clearDataInRange(startISO: string | null, endISO: string | null): Promise<number> {
+  let query = supabase.from('inspections').select('id, photo_path');
+  if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
+  if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not find inspections to delete: ${error.message}`);
+
+  const rows = data || [];
+  const paths = rows.map((r) => r.photo_path).filter(Boolean) as string[];
+
+  if (paths.length > 0) {
+    const { error: removeError } = await supabase.storage.from(INSPECTION_PHOTOS_BUCKET).remove(paths);
+    if (removeError) console.error('Error removing some photos', removeError);
+  }
+  if (rows.length > 0) {
+    const ids = rows.map((r) => r.id);
+    const { error: deleteError } = await supabase.from('inspections').delete().in('id', ids);
+    if (deleteError) throw new Error(`Could not delete inspections: ${deleteError.message}`);
+  }
+  return rows.length;
+}
+
 // ---------- Export tracking (Weekly Export Tracker on the Dashboard) ----------
 
 export async function logExport(exportType: ExportType, rangeStart: string | null, rangeEnd: string | null, recordCount: number) {
