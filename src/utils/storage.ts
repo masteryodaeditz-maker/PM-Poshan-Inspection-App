@@ -385,8 +385,12 @@ export async function clearAllData() {
     if (removeError) console.error('Error removing photos', removeError);
   }
 
-  await supabase.from('inspections').delete().neq('id', '');
-  await supabase.from('schools').delete().neq('id', '');
+  // Row deletes go through a Postgres function that re-checks the caller is an
+  // authenticated admin server-side. A raw .delete() here would be blocked by
+  // RLS for non-admins anyway, but this also protects against someone calling
+  // the table endpoints directly from dev tools while impersonating a request.
+  const { error: rpcError } = await supabase.rpc('admin_clear_all_data');
+  if (rpcError) throw new Error(`Could not clear data: ${rpcError.message}`);
 
   window.location.reload();
 }
@@ -432,12 +436,16 @@ export async function clearDataInRange(startISO: string | null, endISO: string |
     const { error: removeError } = await supabase.storage.from(INSPECTION_PHOTOS_BUCKET).remove(paths);
     if (removeError) console.error('Error removing some photos', removeError);
   }
-  if (rows.length > 0) {
-    const ids = rows.map((r) => r.id);
-    const { error: deleteError } = await supabase.from('inspections').delete().in('id', ids);
-    if (deleteError) throw new Error(`Could not delete inspections: ${deleteError.message}`);
-  }
-  return rows.length;
+
+  // Deletion itself runs server-side via a function that re-checks the admin
+  // role, rather than a raw .delete() call from the browser.
+  const { data: deletedCount, error: rpcError } = await supabase.rpc('admin_clear_data_range', {
+    start_date: startISO,
+    end_date: endISO,
+  });
+  if (rpcError) throw new Error(`Could not delete inspections: ${rpcError.message}`);
+
+  return (deletedCount as number) ?? rows.length;
 }
 
 // ---------- Export tracking (Weekly Export Tracker on the Dashboard) ----------
