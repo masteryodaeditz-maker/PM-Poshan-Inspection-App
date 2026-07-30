@@ -371,7 +371,7 @@ export function exportInspectionsCSV(inspections: InspectionRecord[], rangeLabel
 
 // ---------- Clear all data (Supabase-backed) ----------
 
-export async function clearAllData() {
+export async function clearAllData(deletePassword: string) {
   const confirmed = window.confirm(
     'This will permanently delete every inspection, school record, and photo from the shared Supabase project for everyone. This cannot be undone. Continue?'
   );
@@ -386,11 +386,11 @@ export async function clearAllData() {
   }
 
   // Row deletes go through a Postgres function that re-checks the caller is an
-  // authenticated admin server-side. A raw .delete() here would be blocked by
-  // RLS for non-admins anyway, but this also protects against someone calling
-  // the table endpoints directly from dev tools while impersonating a request.
-  const { error: rpcError } = await supabase.rpc('admin_clear_all_data');
-  if (rpcError) throw new Error(`Could not clear data: ${rpcError.message}`);
+  // authenticated admin AND the delete password, entirely server-side. There is
+  // nothing here for someone to crack from the JS bundle — the password hash
+  // never leaves Postgres.
+  const { error: rpcError } = await supabase.rpc('admin_clear_all_data', { delete_password: deletePassword });
+  if (rpcError) throw new Error(rpcError.message.includes('Incorrect delete password') ? 'Incorrect delete password.' : `Could not clear data: ${rpcError.message}`);
 
   window.location.reload();
 }
@@ -398,7 +398,10 @@ export async function clearAllData() {
 // Delete only the photo files for inspections in [startISO, endISO] (either bound can be null =
 // open-ended). Keeps every inspection record — school, attendance, checklist, everything —
 // just clears the photo_path so the record no longer has an attached image.
-export async function clearPhotosInRange(startISO: string | null, endISO: string | null): Promise<number> {
+export async function clearPhotosInRange(startISO: string | null, endISO: string | null, deletePassword: string): Promise<number> {
+  const { error: verifyError } = await supabase.rpc('admin_verify_delete_password', { candidate: deletePassword });
+  if (verifyError) throw new Error(verifyError.message.includes('Incorrect delete password') ? 'Incorrect delete password.' : `Could not verify password: ${verifyError.message}`);
+
   let query = supabase.from('inspections').select('id, photo_path').not('photo_path', 'is', null);
   if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
   if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
@@ -422,7 +425,7 @@ export async function clearPhotosInRange(startISO: string | null, endISO: string
 
 // Delete inspection records (and their photos) in [startISO, endISO]. Leaves the schools
 // table untouched — compliance stats stay as they were computed at the time.
-export async function clearDataInRange(startISO: string | null, endISO: string | null): Promise<number> {
+export async function clearDataInRange(startISO: string | null, endISO: string | null, deletePassword: string): Promise<number> {
   let query = supabase.from('inspections').select('id, photo_path');
   if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
   if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
@@ -438,12 +441,13 @@ export async function clearDataInRange(startISO: string | null, endISO: string |
   }
 
   // Deletion itself runs server-side via a function that re-checks the admin
-  // role, rather than a raw .delete() call from the browser.
+  // role AND the delete password, rather than a raw .delete() call from the browser.
   const { data: deletedCount, error: rpcError } = await supabase.rpc('admin_clear_data_range', {
     start_date: startISO,
     end_date: endISO,
+    delete_password: deletePassword,
   });
-  if (rpcError) throw new Error(`Could not delete inspections: ${rpcError.message}`);
+  if (rpcError) throw new Error(rpcError.message.includes('Incorrect delete password') ? 'Incorrect delete password.' : `Could not delete inspections: ${rpcError.message}`);
 
   return (deletedCount as number) ?? rows.length;
 }
