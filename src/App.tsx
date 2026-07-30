@@ -2,8 +2,10 @@ import React, { useState, useEffect } from "react";
 import { Header } from "./components/Header";
 import { InspectionFlow } from "./components/InspectionFlow";
 import { Dashboard } from "./components/Dashboard";
+import { LoginGate } from "./components/LoginGate";
 import { InspectionRecord } from "./types";
 import { getInspections, saveInspection } from "./utils/storage";
+import { AppRole, getCurrentRole, onAuthChange, signOut } from "./utils/supabaseAuth";
 
 import bgVeggiesArt from "./assets/images/poshan_bg_veggies_art_1785184273778.jpg";
 import bgThaliArt from "./assets/images/poshan_bg_thali_art_1785184288690.jpg";
@@ -14,6 +16,10 @@ export default function App() {
   const [inspectionsLoading, setInspectionsLoading] = useState(true);
   const [inspectionsError, setInspectionsError] = useState<string | null>(null);
 
+  // Auth state — nothing renders (and no data is fetched) until this resolves.
+  const [role, setRole] = useState<AppRole>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
   const reloadInspections = () => {
     setInspectionsLoading(true);
     setInspectionsError(null);
@@ -23,15 +29,53 @@ export default function App() {
       .finally(() => setInspectionsLoading(false));
   };
 
-  // Load inspections on initial mount
+  // Resolve auth state first. Only fetch inspection data for admins — officers
+  // never need the list, and holding off avoids pulling it into the browser
+  // for anyone who isn't actually authorized to see it.
   useEffect(() => {
-    reloadInspections();
+    getCurrentRole().then((r) => {
+      setRole(r);
+      setAuthChecked(true);
+    });
+    const unsubscribe = onAuthChange((r) => {
+      setRole(r);
+      setAuthChecked(true);
+      if (r !== 'admin') {
+        setActiveTab('inspection');
+        setInspections([]);
+      }
+    });
+    return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (role === 'admin') {
+      reloadInspections();
+    }
+  }, [role]);
 
   const handleSaveInspection = async (recordData: Omit<InspectionRecord, 'id' | 'timestamp'>) => {
     const saved = await saveInspection(recordData);
     setInspections(prev => [saved, ...prev]);
   };
+
+  const handleLogout = async () => {
+    await signOut();
+    setRole(null);
+  };
+
+  // Nothing renders until we know whether there's a session.
+  if (!authChecked) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F8FAF8", color: "#4B5563", fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: 13 }}>
+        Loading...
+      </div>
+    );
+  }
+
+  if (!role) {
+    return <LoginGate onSignedIn={() => { /* onAuthChange listener updates role */ }} />;
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: "#F8FAF8", color: "#111827", fontFamily: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif", position: "relative", overflow: "hidden" }}>
@@ -97,6 +141,8 @@ export default function App() {
       <Header
         activeTab={activeTab}
         setActiveTab={setActiveTab}
+        role={role}
+        onLogout={handleLogout}
       />
 
       {/* Main Content Area */}
@@ -104,11 +150,11 @@ export default function App() {
         {activeTab === 'inspection' && (
           <InspectionFlow
             onSave={handleSaveInspection}
-            onDoneViewDashboard={() => setActiveTab('dashboard')}
+            onDoneViewDashboard={() => { if (role === 'admin') setActiveTab('dashboard'); }}
           />
         )}
 
-        {activeTab === 'dashboard' && (
+        {activeTab === 'dashboard' && role === 'admin' && (
           <>
             {inspectionsLoading && !inspectionsError && (
               <div style={{ margin: "16px auto 0", maxWidth: 1200, padding: "0 20px", fontSize: 13, color: "#4B5563", position: "relative", zIndex: 1 }}>
