@@ -56,6 +56,8 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
   const [clearStart, setClearStart] = useState<string>('');
   const [clearEnd, setClearEnd] = useState<string>('');
   const [clearing, setClearing] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deletePasswordError, setDeletePasswordError] = useState<string | null>(null);
 
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
 
@@ -1213,9 +1215,27 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
               )}
             </div>
 
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: c.textSecondary, marginBottom: 8 }}>Delete password</div>
+              <input
+                type="password"
+                value={deletePassword}
+                onChange={(e) => { setDeletePassword(e.target.value); setDeletePasswordError(null); }}
+                placeholder="Enter delete password to confirm"
+                style={{
+                  width: "100%", padding: "10px 12px", borderRadius: 10,
+                  border: `1.5px solid ${deletePasswordError ? c.terracotta : c.line}`,
+                  fontSize: 13, color: c.ink, background: c.paper, boxSizing: "border-box"
+                }}
+              />
+              {deletePasswordError && (
+                <div style={{ fontSize: 11, color: c.terracotta, marginTop: 6, fontWeight: 600 }}>{deletePasswordError}</div>
+              )}
+            </div>
+
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <button
-                onClick={() => setShowClearModal(false)}
+                onClick={() => { setShowClearModal(false); setDeletePassword(''); setDeletePasswordError(null); }}
                 disabled={clearing}
                 style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${c.line}`, background: c.paper, color: c.ink, fontWeight: 600, cursor: clearing ? "wait" : "pointer" }}
               >
@@ -1223,6 +1243,10 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
               </button>
               <button
                 onClick={async () => {
+                  if (!deletePassword) {
+                    setDeletePasswordError('Delete password is required.');
+                    return;
+                  }
                   const rangeText = clearStart || clearEnd
                     ? `from ${clearStart || 'the beginning'} to ${clearEnd || 'now'}`
                     : 'for ALL TIME';
@@ -1231,24 +1255,31 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
                   if (!proceed) return;
 
                   setClearing(true);
+                  setDeletePasswordError(null);
                   try {
                     const startISO = clearStart || null;
                     const endISO = clearEnd || null;
                     let count = 0;
                     if (clearMode === 'photos') {
-                      count = await clearPhotosInRange(startISO, endISO);
+                      count = await clearPhotosInRange(startISO, endISO, deletePassword);
                     } else if (!startISO && !endISO) {
                       // Full wipe, all time — reuses the original full-reset behavior (also clears schools + reloads)
-                      await clearAllData();
+                      await clearAllData(deletePassword);
                       return; // clearAllData reloads the page itself
                     } else {
-                      count = await clearDataInRange(startISO, endISO);
+                      count = await clearDataInRange(startISO, endISO, deletePassword);
                     }
                     setShowClearModal(false);
+                    setDeletePassword('');
                     onDataChanged();
                     alert(`Done — ${count} item${count === 1 ? '' : 's'} deleted.`);
                   } catch (e) {
-                    alert(e instanceof Error ? e.message : 'Could not delete. Please try again.');
+                    const msg = e instanceof Error ? e.message : 'Could not delete. Please try again.';
+                    if (msg.toLowerCase().includes('incorrect delete password')) {
+                      setDeletePasswordError(msg);
+                    } else {
+                      alert(msg);
+                    }
                   } finally {
                     setClearing(false);
                   }
