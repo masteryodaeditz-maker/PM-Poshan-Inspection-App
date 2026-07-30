@@ -25,7 +25,7 @@ export default function App() {
     setInspectionsError(null);
     getInspections()
       .then(setInspections)
-      .catch((e) => setInspectionsError(e.message || 'Could not load inspections'))
+      .catch((e) => { console.error('Could not load inspections', e); setInspectionsError('Could not load inspections. Please check your connection and try again.'); })
       .finally(() => setInspectionsLoading(false));
   };
 
