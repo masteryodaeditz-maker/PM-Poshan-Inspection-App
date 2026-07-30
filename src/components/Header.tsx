@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Leaf, ClipboardCheck, LayoutDashboard, Plus } from 'lucide-react';
+import { Leaf, ClipboardCheck, LayoutDashboard, Plus, LogOut } from 'lucide-react';
+import { AppRole } from '../utils/supabaseAuth';
 
 interface HeaderProps {
   activeTab: 'inspection' | 'dashboard';
   setActiveTab: (tab: 'inspection' | 'dashboard') => void;
+  role: AppRole;
+  onLogout: () => void;
 }
 
-export function Header({ activeTab, setActiveTab }: HeaderProps) {
+export function Header({ activeTab, setActiveTab, role, onLogout }: HeaderProps) {
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
 
   useEffect(() => {
@@ -120,6 +123,27 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
               <span>Form</span>
             </button>
           )}
+          <button
+            onClick={onLogout}
+            title={role === 'admin' ? 'Log out (admin)' : 'Log out (officer)'}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: isMobile ? "5px 8px" : "9px 14px",
+              background: "transparent",
+              color: c.textSecondary,
+              border: `1px solid ${c.line}`,
+              borderRadius: 8,
+              fontSize: isMobile ? 12 : 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              whiteSpace: "nowrap"
+            }}
+          >
+            <LogOut size={isMobile ? 14 : 15} />
+            {!isMobile && <span>Log out</span>}
+          </button>
         </div>
       </div>
 
@@ -136,7 +160,7 @@ export function Header({ activeTab, setActiveTab }: HeaderProps) {
       }}>
         {[
           { id: "inspection", label: isMobile ? "Inspect" : "Inspect Form", icon: ClipboardCheck },
-          { id: "dashboard", label: "Dashboard", icon: LayoutDashboard }
+          ...(role === 'admin' ? [{ id: "dashboard", label: "Dashboard", icon: LayoutDashboard }] : [])
         ].map(tab => {
           const isActive = activeTab === tab.id;
           return (
