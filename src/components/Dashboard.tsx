@@ -2,14 +2,12 @@ import React, { useState, useEffect } from 'react';
 import {
   Utensils, Users, ClipboardCheck, AlertCircle, TrendingUp, Download,
   Filter, Search, MapPin, CheckCircle2, X, Calendar, Trash2,
-  Building2, Camera, ArrowUpRight, ShieldCheck, FolderDown, LogOut, LayoutGrid,
+  Building2, Camera, ArrowUpRight, ShieldCheck, FolderDown, LayoutGrid,
   UserCheck, AlertTriangle, BarChart3
 } from 'lucide-react';
 import { InspectionRecord, BlockName, ExportLogEntry, ExportType } from '../types';
 import { INITIAL_BLOCKS } from '../data/mockData';
 import { exportInspectionsCSV, clearAllData, clearPhotosInRange, clearDataInRange, downloadInspectionPhoto, exportPhotosZip, getExportLog } from '../utils/storage';
-import { isDashboardUnlocked, lockDashboard } from '../utils/auth';
-import { PasswordGate } from './PasswordGate';
 import { SchoolDirectory } from './SchoolDirectory';
 
 import pmPoshanBanner from "../assets/images/poshan_minimal_hero_1785183621105.jpg";
@@ -43,7 +41,6 @@ interface DashboardProps {
 }
 
 export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged }: DashboardProps) {
-  const [unlocked, setUnlocked] = useState(() => isDashboardUnlocked());
   const [dashboardView, setDashboardView] = useState<'overview' | 'schools'>('overview');
   const [selectedBlock, setSelectedBlock] = useState<string>("All");
   const [statusFilter, setStatusFilter] = useState<string>("All");
@@ -73,10 +70,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
   useEffect(() => {
     getExportLog().then(setExportLog).catch((e) => console.error('Error loading export log', e));
   }, []);
-
-  if (!unlocked) {
-    return <PasswordGate onUnlock={() => setUnlocked(true)} />;
-  }
 
   // ---- Period filter (dashboard-wide) ----
   const PERIOD_LABELS: Record<typeof periodFilter, string> = {
@@ -365,23 +358,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
             <Trash2 size={15} />
           </button>
 
-          <button
-            onClick={() => { lockDashboard(); setUnlocked(false); }}
-            title="Lock dashboard"
-            style={{
-              padding: "10px 14px",
-              background: c.paper,
-              border: `1px solid ${c.line}`,
-              borderRadius: 10,
-              cursor: "pointer",
-              color: c.textSecondary,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center"
-            }}
-          >
-            <LogOut size={15} />
-          </button>
         </div>
       </div>
 
