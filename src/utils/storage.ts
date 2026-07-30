@@ -187,7 +187,7 @@ async function uploadPhoto(dataUrl: string, block: string, schoolName: string): 
     contentType: 'image/jpeg',
     upsert: false,
   });
-  if (error) throw new Error(`Photo upload failed: ${error.message}`);
+  if (error) { console.error('Photo upload failed', error); throw new Error('Could not upload photo. Please try again.'); }
   return path;
 }
 
@@ -238,7 +238,7 @@ export async function saveInspection(newRecord: Omit<InspectionRecord, 'id' | 't
 
   const row = recordToRow(newRecord, id, createdAt, photoPath);
   const { error } = await supabase.from('inspections').insert(row);
-  if (error) throw new Error(`Could not save inspection: ${error.message}`);
+  if (error) { console.error('Could not save inspection', error); throw new Error('Could not save inspection. Please check your connection and try again.'); }
 
   const photoUrl = photoPath ? (await signedUrlsForPaths([photoPath])).get(photoPath) : undefined;
   const record = rowToRecord(row as unknown as InspectionRow, photoUrl);
@@ -390,7 +390,11 @@ export async function clearAllData(deletePassword: string) {
   // nothing here for someone to crack from the JS bundle — the password hash
   // never leaves Postgres.
   const { error: rpcError } = await supabase.rpc('admin_clear_all_data', { delete_password: deletePassword });
-  if (rpcError) throw new Error(rpcError.message.includes('Incorrect delete password') ? 'Incorrect delete password.' : `Could not clear data: ${rpcError.message}`);
+  if (rpcError) {
+    if (rpcError.message.includes('Incorrect delete password')) throw new Error('Incorrect delete password.');
+    console.error('Could not clear data', rpcError);
+    throw new Error('Could not clear data. Please try again.');
+  }
 
   window.location.reload();
 }
@@ -400,25 +404,29 @@ export async function clearAllData(deletePassword: string) {
 // just clears the photo_path so the record no longer has an attached image.
 export async function clearPhotosInRange(startISO: string | null, endISO: string | null, deletePassword: string): Promise<number> {
   const { error: verifyError } = await supabase.rpc('admin_verify_delete_password', { candidate: deletePassword });
-  if (verifyError) throw new Error(verifyError.message.includes('Incorrect delete password') ? 'Incorrect delete password.' : `Could not verify password: ${verifyError.message}`);
+  if (verifyError) {
+    if (verifyError.message.includes('Incorrect delete password')) throw new Error('Incorrect delete password.');
+    console.error('Could not verify delete password', verifyError);
+    throw new Error('Could not verify password. Please try again.');
+  }
 
   let query = supabase.from('inspections').select('id, photo_path').not('photo_path', 'is', null);
   if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
   if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
   const { data, error } = await query;
-  if (error) throw new Error(`Could not find photos to delete: ${error.message}`);
+  if (error) { console.error('Could not find photos to delete', error); throw new Error('Could not find photos to delete. Please try again.'); }
 
   const rows = data || [];
   const paths = rows.map((r) => r.photo_path).filter(Boolean) as string[];
 
   if (paths.length > 0) {
     const { error: removeError } = await supabase.storage.from(INSPECTION_PHOTOS_BUCKET).remove(paths);
-    if (removeError) throw new Error(`Could not delete photo files: ${removeError.message}`);
+    if (removeError) { console.error('Could not delete photo files', removeError); throw new Error('Could not delete photo files. Please try again.'); }
   }
   if (rows.length > 0) {
     const ids = rows.map((r) => r.id);
     const { error: updateError } = await supabase.from('inspections').update({ photo_path: null }).in('id', ids);
-    if (updateError) throw new Error(`Could not clear photo references: ${updateError.message}`);
+    if (updateError) { console.error('Could not clear photo references', updateError); throw new Error('Could not update photo records. Please try again.'); }
   }
   return rows.length;
 }
@@ -430,7 +438,7 @@ export async function clearDataInRange(startISO: string | null, endISO: string |
   if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
   if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
   const { data, error } = await query;
-  if (error) throw new Error(`Could not find inspections to delete: ${error.message}`);
+  if (error) { console.error('Could not find inspections to delete', error); throw new Error('Could not find inspections to delete. Please try again.'); }
 
   const rows = data || [];
   const paths = rows.map((r) => r.photo_path).filter(Boolean) as string[];
@@ -447,7 +455,11 @@ export async function clearDataInRange(startISO: string | null, endISO: string |
     end_date: endISO,
     delete_password: deletePassword,
   });
-  if (rpcError) throw new Error(rpcError.message.includes('Incorrect delete password') ? 'Incorrect delete password.' : `Could not delete inspections: ${rpcError.message}`);
+  if (rpcError) {
+    if (rpcError.message.includes('Incorrect delete password')) throw new Error('Incorrect delete password.');
+    console.error('Could not delete inspections', rpcError);
+    throw new Error('Could not delete inspections. Please try again.');
+  }
 
   return (deletedCount as number) ?? rows.length;
 }
