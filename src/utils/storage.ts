@@ -228,59 +228,46 @@ export async function getInspections(): Promise<InspectionRecord[]> {
 }
 
 export async function saveInspection(newRecord: Omit<InspectionRecord, 'id' | 'timestamp'>): Promise<InspectionRecord> {
-  const id = `INSP-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 100)}`;
-  const createdAt = new Date().toISOString();
-
   let photoPath: string | null = null;
   if (newRecord.photoUrl) {
     photoPath = await uploadPhoto(newRecord.photoUrl, newRecord.block, newRecord.schoolName);
   }
 
-  const row = recordToRow(newRecord, id, createdAt, photoPath);
-  const { error } = await supabase.from('inspections').insert(row);
+  // Officers no longer need direct SELECT/INSERT on `inspections`/`schools` —
+  // this single RPC does the insert plus the compliance-rate calc and schools
+  // upsert entirely server-side (security definer), using data the function
+  // is allowed to see rather than data sent back to the browser first.
+  const payload = recordToRow(newRecord, '', '', photoPath); // id/created_at filled server-side; kept for shape
+  delete (payload as Record<string, unknown>).id;
+  delete (payload as Record<string, unknown>).created_at;
+
+  const { data, error } = await supabase.rpc('submit_inspection', { payload });
   if (error) { console.error('Could not save inspection', error); throw new Error('Could not save inspection. Please check your connection and try again.'); }
 
+  const id = (data as { id: string }).id;
+  const createdAt = (data as { created_at: string }).created_at;
+  const row = recordToRow(newRecord, id, createdAt, photoPath);
   const photoUrl = photoPath ? (await signedUrlsForPaths([photoPath])).get(photoPath) : undefined;
-  const record = rowToRecord(row as unknown as InspectionRow, photoUrl);
-
-  await upsertSchoolFromInspection(record);
-
-  return record;
+  return rowToRecord(row as unknown as InspectionRow, photoUrl);
 }
 
-async function upsertSchoolFromInspection(record: InspectionRecord) {
-  const { data: history, error: historyError } = await supabase
-    .from('inspections')
-    .select('meal_served')
-    .ilike('school_name', record.schoolName);
-
-  if (historyError) {
-    console.error('Error computing compliance rate', historyError);
+// Restricted lookup for the submission form's school-name autocomplete. Returns
+// only name/block/category — never compliance rate or contact info — since
+// officers only need this to avoid mistyping a school name.
+export async function getSchoolDirectoryForSubmission(): Promise<SchoolRecord[]> {
+  const { data, error } = await supabase.rpc('list_schools_directory');
+  if (error) {
+    console.error('Error fetching school directory', error);
+    return [];
   }
-
-  const servedCount = (history || []).filter((h) => h.meal_served === 'yes').length;
-  const total = (history || []).length || 1;
-  const complianceRate = Math.round((servedCount / total) * 100);
-  const primaryCategory = (record.schoolCategory.split(',')[0].trim() || 'LP') as SchoolRecord['category'];
-
-  const { data: existing } = await supabase
-    .from('schools')
-    .select('id')
-    .ilike('name', record.schoolName)
-    .maybeSingle();
-
-  const schoolRow = {
-    id: existing?.id || `SCH-${Date.now().toString().slice(-6)}`,
-    name: record.schoolName,
-    block: record.block,
-    category: primaryCategory,
-    enrolled_students: record.expectedStudentCount || 0,
-    last_inspected: record.timestamp,
-    compliance_rate: complianceRate,
-  };
-
-  const { error } = await supabase.from('schools').upsert(schoolRow, { onConflict: 'id' });
-  if (error) console.error('Error upserting school', error);
+  return (data || []).map((s: { id: string; name: string; block: string; category: string }) => ({
+    id: s.id,
+    name: s.name,
+    block: s.block as SchoolRecord['block'],
+    category: s.category as SchoolRecord['category'],
+    enrolledStudents: 0,
+    complianceRate: 0,
+  }));
 }
 
 export async function getSchools(): Promise<SchoolRecord[]> {
@@ -303,6 +290,18 @@ export async function getSchools(): Promise<SchoolRecord[]> {
 
 // ---------- CSV export (unchanged shape, extended columns) ----------
 
+// Prevents CSV/formula injection: if a free-text field (remarks, inspector
+// name, etc — all inspector-entered) starts with =, +, -, @, or certain
+// control characters, spreadsheet software like Excel may interpret it as a
+// formula and execute it when the exported file is opened. Prefixing with a
+// single quote neutralizes that while keeping the value readable.
+function csvSafe(value: string): string {
+  const v = value ?? '';
+  const dangerous = /^[=+\-@\t\r]/;
+  const escaped = dangerous.test(v) ? `'${v}` : v;
+  return `"${escaped.replace(/"/g, '""')}"`;
+}
+
 export function exportInspectionsCSV(inspections: InspectionRecord[], rangeLabel?: { start: string | null; end: string | null }) {
   const headers = [
     'ID', 'Timestamp', 'Block', 'School Name', 'Category', 'Management Type',
@@ -318,10 +317,10 @@ export function exportInspectionsCSV(inspections: InspectionRecord[], rangeLabel
   const rows = inspections.map(i => [
     i.id,
     new Date(i.timestamp).toLocaleString(),
-    `"${i.block}"`,
-    `"${i.schoolName}"`,
+    csvSafe(i.block),
+    csvSafe(i.schoolName),
     i.schoolCategory,
-    `"${i.managementType || ''}"`,
+    csvSafe(i.managementType || ''),
     i.mealServed === 'yes' ? 'Served' : 'Missed',
     i.studentCount,
     i.attendanceBoys ?? '',
@@ -330,28 +329,28 @@ export function exportInspectionsCSV(inspections: InspectionRecord[], rangeLabel
     i.aadhaarGirls ?? '',
     i.latitude || '',
     i.longitude || '',
-    `"${i.issueCategory || ''}"`,
-    `"${(i.remarks || '').replace(/"/g, '""')}"`,
-    `"${i.inspectorName || ''}"`,
+    csvSafe(i.issueCategory || ''),
+    csvSafe(i.remarks || ''),
+    csvSafe(i.inspectorName || ''),
     i.mealsServedAllFiveDays === 'yes' ? 'Yes' : (i.mealsServedAllFiveDays === 'no' ? 'No' : ''),
     i.missedMealDaysCount ?? '',
-    `"${(i.missedMealDaysReason || '').replace(/"/g, '""')}"`,
+    csvSafe(i.missedMealDaysReason || ''),
     i.kitchenShed || '',
-    `"${(i.kitchenShedReason || '').replace(/"/g, '""')}"`,
+    csvSafe(i.kitchenShedReason || ''),
     i.foodgrainsDelivered || '',
     i.foodgrainsReportedSDSEO || '',
-    `"${(i.foodgrainsNoReportReason || '').replace(/"/g, '""')}"`,
+    csvSafe(i.foodgrainsNoReportReason || ''),
     i.waterSupply || '',
-    `"${(i.waterSupplyReason || '').replace(/"/g, '""')}"`,
+    csvSafe(i.waterSupplyReason || ''),
     i.kitchenGarden || '',
-    `"${i.kitchenGardenType || ''}"`,
-    `"${(i.kitchenGardenReason || '').replace(/"/g, '""')}"`,
+    csvSafe(i.kitchenGardenType || ''),
+    csvSafe(i.kitchenGardenReason || ''),
     i.monthlyFormMonth || '',
     i.utilizationCertMonth || '',
     i.submittedSDSEO || '',
-    `"${(i.sdseoNonSubmissionReason || '').replace(/"/g, '""')}"`,
+    csvSafe(i.sdseoNonSubmissionReason || ''),
     i.meghSimsDaily || '',
-    `"${(i.meghSimsNoReason || '').replace(/"/g, '""')}"`,
+    csvSafe(i.meghSimsNoReason || ''),
   ]);
 
   const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
