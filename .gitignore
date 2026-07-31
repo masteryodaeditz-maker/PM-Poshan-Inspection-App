@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment files — never commit real secrets or credentials
+.env
+.env.local
+.env.*.local
+
+# Editor/OS junk
+.DS_Store
+.vscode/
+*.log
