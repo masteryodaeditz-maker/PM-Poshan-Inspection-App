@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { BlockName, SchoolCategory, QualityIssueCategory, InspectionRecord, SchoolRecord } from "../types";
 import { INITIAL_BLOCKS, SCHOOL_TYPES, ISSUE_CATEGORIES } from "../data/mockData";
-import { getSchools } from "../utils/storage";
+import { getSchoolDirectoryForSubmission } from "../utils/storage";
 import pmPoshanBanner from "../assets/images/poshan_minimal_hero_1785183621105.jpg";
 import bgNutrition from "../assets/images/poshan_bg_nutrition_1785183996328.jpg";
 import bgEvidence from "../assets/images/poshan_bg_evidence_1785184009911.jpg";
@@ -180,7 +180,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
   const [filteredSchools, setFilteredSchools] = useState<string[]>([]);
 
   useEffect(() => {
-    getSchools().then(setRegisteredSchools).catch((e) => console.error('Error loading schools', e));
+    getSchoolDirectoryForSubmission().then(setRegisteredSchools).catch((e) => console.error('Error loading schools', e));
   }, []);
 
   const fileRef = useRef<HTMLInputElement>(null);
