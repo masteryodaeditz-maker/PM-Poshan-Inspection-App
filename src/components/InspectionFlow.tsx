@@ -187,10 +187,9 @@ function MonthYearField({
 
 interface InspectionFlowProps {
   onSave: (record: Omit<InspectionRecord, 'id' | 'timestamp'>) => Promise<void>;
-  onDoneViewDashboard?: () => void;
 }
 
-export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowProps) {
+export function InspectionFlow({ onSave }: InspectionFlowProps) {
   const [step, setStep] = useState(0);
   const [submitted, setSubmitted] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -570,25 +569,6 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
             >
               Log Another School Inspection
             </button>
-
-            {onDoneViewDashboard && (
-              <button
-                onClick={onDoneViewDashboard}
-                style={{
-                  width: "100%",
-                  padding: 14,
-                  borderRadius: 12,
-                  background: c.surface,
-                  color: c.ink,
-                  border: `1px solid ${c.line}`,
-                  fontSize: 14,
-                  fontWeight: 500,
-                  cursor: "pointer"
-                }}
-              >
-                View Analytics Dashboard
-              </button>
-            )}
           </div>
         </div>
       </div>

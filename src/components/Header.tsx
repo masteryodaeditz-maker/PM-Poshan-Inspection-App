@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Leaf, ClipboardCheck, LayoutDashboard, Plus, LogOut } from 'lucide-react';
+import { ClipboardCheck, LayoutDashboard, Plus, LogOut } from 'lucide-react';
 import { AppRole } from '../utils/supabaseAuth';
+import pmPoshanLogo from '../assets/images/pm_poshan_logo.png';
 
 interface HeaderProps {
   activeTab: 'inspection' | 'dashboard';
@@ -62,14 +63,18 @@ export function Header({ activeTab, setActiveTab, role, onLogout }: HeaderProps)
             width: isMobile ? 36 : 40,
             height: isMobile ? 36 : 40,
             borderRadius: 10,
-            background: "linear-gradient(135deg, #0F4C3A 0%, #082C22 100%)",
+            background: "#FFFFFF",
+            border: "1px solid #E2E8F0",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            boxShadow: "0 3px 10px rgba(15,76,58,0.25)",
-            flexShrink: 0
+            boxShadow: "0 3px 10px rgba(15,76,58,0.15)",
+            flexShrink: 0,
+            overflow: "hidden",
+            padding: 4,
+            boxSizing: "border-box"
           }}>
-            <Leaf size={isMobile ? 19 : 22} color="#FFFFFF" />
+            <img src={pmPoshanLogo} alt="PM POSHAN" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
           </div>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>

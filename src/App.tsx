@@ -165,7 +165,6 @@ export default function App() {
         {activeTab === 'inspection' && (
           <InspectionFlow
             onSave={handleSaveInspection}
-            onDoneViewDashboard={() => { if (role === 'admin') setActiveTab('dashboard'); }}
           />
         )}
 
