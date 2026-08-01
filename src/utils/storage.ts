@@ -435,20 +435,28 @@ export function exportRowsXLSX(
   XLSX.writeFile(wb, `${filenameBase}_${dateSuffix}.xlsx`);
 }
 
+// Same protection as csvSafe() above, adapted for XLSX cells (no CSV quoting
+// needed here — just the leading-apostrophe convention that forces spreadsheet
+// software to treat the value as plain text rather than a formula).
+function xlsxSafe(value: string): string {
+  const v = value ?? '';
+  return /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+}
+
 export function exportInspectionsXLSX(inspections: InspectionRecord[], rangeLabel?: { start: string | null; end: string | null }) {
   const columns: XlsxColumn[] = [
     { header: 'Timestamp', width: 18, value: (i: InspectionRecord) => new Date(i.timestamp).toLocaleString() },
     { header: 'Block', width: 16, value: (i: InspectionRecord) => i.block },
-    { header: 'School Name', width: 28, value: (i: InspectionRecord) => i.schoolName },
+    { header: 'School Name', width: 28, value: (i: InspectionRecord) => xlsxSafe(i.schoolName) },
     { header: 'Category', width: 12, value: (i: InspectionRecord) => i.schoolCategory },
-    { header: 'Inspector', width: 18, value: (i: InspectionRecord) => i.inspectorName || '' },
+    { header: 'Inspector', width: 18, value: (i: InspectionRecord) => xlsxSafe(i.inspectorName || '') },
     { header: 'Meal Served', width: 12, value: (i: InspectionRecord) => i.mealServed === 'yes' ? 'Served' : 'Missed' },
     { header: 'Students Served', width: 14, value: (i: InspectionRecord) => i.studentCount },
     { header: 'Kitchen Functional', width: 16, value: (i: InspectionRecord) => i.kitchenShed === 'yes' ? 'Yes' : i.kitchenShed === 'no' ? 'No' : '' },
     { header: 'Water Supply', width: 14, value: (i: InspectionRecord) => i.waterSupply === 'yes' ? 'Yes' : i.waterSupply === 'no' ? 'No' : '' },
     { header: 'Foodgrain Delivered', width: 16, value: (i: InspectionRecord) => i.foodgrainsDelivered === 'yes' ? 'Yes' : i.foodgrainsDelivered === 'no' ? 'No' : '' },
     { header: 'Meals All 5 Days', width: 16, value: (i: InspectionRecord) => i.mealsServedAllFiveDays === 'yes' ? 'Yes' : i.mealsServedAllFiveDays === 'no' ? 'No' : '' },
-    { header: 'Remarks', width: 30, value: (i: InspectionRecord) => i.remarks || '' },
+    { header: 'Remarks', width: 30, value: (i: InspectionRecord) => xlsxSafe(i.remarks || '') },
   ];
 
   const filenameDateSuffix = rangeLabel && (rangeLabel.start || rangeLabel.end)

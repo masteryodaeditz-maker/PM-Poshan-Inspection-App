@@ -22,11 +22,17 @@ View your app in AI Studio: https://ai.studio/apps/48fd05ee-aaad-447a-867c-7b8c3
 
 ## Dashboard access
 
-The Dashboard (and School Directory inside it) is password-protected.
+The Dashboard (and School Directory inside it) requires signing in as an
+**admin** account. This is real server-side authentication via Supabase Auth,
+enforced by Postgres Row Level Security — not a client-side password check.
 
-- **Default password:** `PMPoshan@EKH2026`
-- To change it, see the instructions at the top of `src/utils/auth.ts` — you paste in a new SHA-256 hash, the plain password is never stored in the code.
-- This is a client-side lock only (no backend yet), so treat it as a deterrent against casual snooping, not a substitute for real authentication. Ask if you want this moved to a real backend (e.g. Firebase Auth) before going live.
+- There is no public sign-up flow. Two accounts exist: a shared **Officer**
+  login (submit inspections only) and an **Admin** login (full dashboard +
+  export access). See `SECURITY_SETUP.md` for how to create/rotate these
+  accounts in your own Supabase project.
+- Never write real passwords into this README, into commit messages, or into
+  chat — set them directly in the Supabase dashboard and keep them in a
+  password manager.
 
 ## What changed from the original AI Studio draft
 
