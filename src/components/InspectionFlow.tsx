@@ -2,11 +2,13 @@ import React, { useState, useRef, useEffect } from "react";
 import {
   ChevronLeft, ChevronRight, ChevronDown, Building2, GraduationCap, Users,
   Camera, MapPin, MessageSquare, CheckCircle2, Utensils, X,
-  Leaf, Wheat, Carrot, Soup, AlertTriangle, Sparkles, Image, Check, ClipboardList, FileText, Upload
+  Leaf, Wheat, Carrot, Soup, AlertTriangle, Sparkles, Image, Check, ClipboardList, FileText, Upload,
+  Loader2
 } from "lucide-react";
 import { BlockName, SchoolCategory, QualityIssueCategory, InspectionRecord, SchoolRecord } from "../types";
 import { INITIAL_BLOCKS, SCHOOL_TYPES, ISSUE_CATEGORIES } from "../data/mockData";
 import { getSchoolDirectoryForSubmission } from "../utils/storage";
+import { stampPhoto, reverseGeocode } from "../utils/photoStamp";
 import pmPoshanBanner from "../assets/images/poshan_minimal_hero_1785183621105.jpg";
 import bgNutrition from "../assets/images/poshan_bg_nutrition_1785183996328.jpg";
 import bgEvidence from "../assets/images/poshan_bg_evidence_1785184009911.jpg";
@@ -105,6 +107,84 @@ const inputBase: React.CSSProperties = {
   fontFamily: "inherit"
 };
 
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+
+// The record stores a readable label ("June 2026") for CSV exports and older
+// records; the native <input type="month"> control needs "YYYY-MM". These
+// convert between the two so the picker can stay controlled either way.
+function monthLabelToInputValue(label: string): string {
+  const parts = label.trim().split(/\s+/);
+  if (parts.length !== 2) return "";
+  const idx = MONTH_NAMES.findIndex((m) => m.toLowerCase() === parts[0].toLowerCase());
+  const year = parseInt(parts[1], 10);
+  if (idx === -1 || !year) return "";
+  return `${year}-${String(idx + 1).padStart(2, "0")}`;
+}
+
+function monthInputValueToLabel(value: string): string {
+  const [y, m] = value.split("-");
+  const idx = parseInt(m, 10) - 1;
+  if (!y || idx < 0 || idx > 11) return "";
+  return `${MONTH_NAMES[idx]} ${y}`;
+}
+
+const CURRENT_MONTH_VALUE = new Date().toISOString().slice(0, 7);
+
+// A proper tap-to-pick month/year field: a real <input type="month"> is laid
+// invisibly over the styled FloatingField, so tapping anywhere on it opens
+// the device's native month/year picker instead of a free-text keyboard.
+function MonthYearField({
+  icon, label, value, onChange, active, onFocusField, onBlurField
+}: {
+  icon: any;
+  label: string;
+  value: string; // human label, e.g. "June 2026"
+  onChange: (label: string) => void;
+  active: boolean;
+  onFocusField: () => void;
+  onBlurField: () => void;
+}) {
+  const rawValue = monthLabelToInputValue(value);
+  return (
+    <div style={{ position: "relative" }}>
+      <FloatingField
+        icon={icon}
+        label={label}
+        active={active}
+        filled={value.trim().length > 0}
+        rightElement={<ChevronDown size={16} color={active ? c.forest : c.textFaint} style={{ pointerEvents: "none" }} />}
+      >
+        <div style={{ ...inputBase, pointerEvents: "none" }}>
+          {value ? value : <span style={{ color: c.textFaint, fontWeight: 500 }}>Tap to select month & year</span>}
+        </div>
+      </FloatingField>
+      <input
+        type="month"
+        value={rawValue}
+        max={CURRENT_MONTH_VALUE}
+        aria-label={label}
+        onFocus={onFocusField}
+        onBlur={onBlurField}
+        onChange={(e) => onChange(e.target.value ? monthInputValueToLabel(e.target.value) : "")}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          opacity: 0,
+          border: "none",
+          padding: 0,
+          margin: 0,
+          cursor: "pointer"
+        }}
+      />
+    </div>
+  );
+}
+
 interface InspectionFlowProps {
   onSave: (record: Omit<InspectionRecord, 'id' | 'timestamp'>) => Promise<void>;
   onDoneViewDashboard?: () => void;
@@ -128,10 +208,10 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
   }, []);
 
   // Form State
-  const [block, setBlock] = useState<BlockName | "">("Mawphlang");
-  const [schoolName, setSchoolName] = useState("Mawphlang Govt. LP School");
-  const [schoolCategories, setSchoolCategories] = useState<SchoolCategory[]>(["LP"]);
-  const [managementType, setManagementType] = useState<string>("Government");
+  const [block, setBlock] = useState<BlockName | "">("");
+  const [schoolName, setSchoolName] = useState("");
+  const [schoolCategories, setSchoolCategories] = useState<SchoolCategory[]>([]);
+  const [managementType, setManagementType] = useState<string>("");
 
   const toggleSchoolCategory = (cat: SchoolCategory) => {
     setSchoolCategories((prev) => {
@@ -142,10 +222,10 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
       }
     });
   };
-  const [attendanceBoys, setAttendanceBoys] = useState<string>("0");
-  const [attendanceGirls, setAttendanceGirls] = useState<string>("0");
-  const [aadhaarBoys, setAadhaarBoys] = useState<string>("0");
-  const [aadhaarGirls, setAadhaarGirls] = useState<string>("0");
+  const [attendanceBoys, setAttendanceBoysRaw] = useState<string>("");
+  const [attendanceGirls, setAttendanceGirlsRaw] = useState<string>("");
+  const [aadhaarBoys, setAadhaarBoysRaw] = useState<string>("");
+  const [aadhaarGirls, setAadhaarGirlsRaw] = useState<string>("");
   const [kitchenShed, setKitchenShed] = useState<"yes" | "no">("yes");
   const [kitchenShedReason, setKitchenShedReason] = useState<string>("");
   const [foodgrainsDelivered, setFoodgrainsDelivered] = useState<"yes" | "no">("yes");
@@ -153,7 +233,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
   const [waterSupply, setWaterSupply] = useState<"yes" | "no">("yes");
   const [waterSupplyReason, setWaterSupplyReason] = useState<string>("");
   const [kitchenGarden, setKitchenGarden] = useState<"yes" | "no">("yes");
-  const [kitchenGardenType, setKitchenGardenType] = useState<string>("Open Garden");
+  const [kitchenGardenType, setKitchenGardenType] = useState<string>("");
   const [kitchenGardenReason, setKitchenGardenReason] = useState<string>("");
   const [monthlyFormMonth, setMonthlyFormMonth] = useState<string>("");
   const [utilizationCertMonth, setUtilizationCertMonth] = useState<string>("");
@@ -163,7 +243,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
   const [meghSimsDaily, setMeghSimsDaily] = useState<"yes" | "no">("yes");
   const [meghSimsNoReason, setMeghSimsNoReason] = useState<string>("");
   const [mealsServedAllFiveDays, setMealsServedAllFiveDays] = useState<"yes" | "no">("yes");
-  const [missedMealDaysCount, setMissedMealDaysCount] = useState<string>("");
+  const [missedMealDaysCount, setMissedMealDaysCountRaw] = useState<string>("");
   const [missedMealDaysReason, setMissedMealDaysReason] = useState<string>("");
   const [mealServed, setMealServed] = useState<"yes" | "no" | null>("yes");
   const [studentCount, setStudentCount] = useState<string>("");
@@ -171,9 +251,35 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
   const [photo, setPhoto] = useState<string | null>(null);
   const [geo, setGeo] = useState<{ lat: string; lng: string } | null>(null);
   const [geoLoading, setGeoLoading] = useState(false);
+  const [stamping, setStamping] = useState(false);
   const [remarks, setRemarks] = useState("");
   const [issueCategory, setIssueCategory] = useState<QualityIssueCategory | "">("");
-  const [inspectorName, setInspectorName] = useState("Bah K. Lyngdoh (Block Officer)");
+  const [inspectorName, setInspectorName] = useState("");
+
+  // Touched-field tracking, so inline errors only appear after someone has
+  // actually left a field (not the instant the page loads on an empty form).
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const markTouched = (field: string) => setTouched((t) => (t[field] ? t : { ...t, [field]: true }));
+
+  // Only real whole numbers reach state: strips anything that isn't a digit,
+  // then collapses leading zeros (so typing "007" ends up as "7", not blocked
+  // silently) while still allowing a bare "0".
+  const sanitizeWholeNumber = (raw: string): string => {
+    const digitsOnly = raw.replace(/[^0-9]/g, '');
+    return digitsOnly.replace(/^0+(?=\d)/, '');
+  };
+  const setAttendanceBoys = (v: string) => setAttendanceBoysRaw(sanitizeWholeNumber(v));
+  const setAttendanceGirls = (v: string) => setAttendanceGirlsRaw(sanitizeWholeNumber(v));
+  const setAadhaarBoys = (v: string) => setAadhaarBoysRaw(sanitizeWholeNumber(v));
+  const setAadhaarGirls = (v: string) => setAadhaarGirlsRaw(sanitizeWholeNumber(v));
+  const setMissedMealDaysCount = (v: string) => setMissedMealDaysCountRaw(sanitizeWholeNumber(v));
+
+  const InlineError = ({ show, message }: { show: boolean; message: string }) =>
+    show ? (
+      <div style={{ fontSize: 11, color: c.terracotta, marginTop: 4, marginBottom: 2, fontWeight: 600 }}>
+        {message}
+      </div>
+    ) : null;
 
   // Registered schools list for dropdown suggestion
   const [registeredSchools, setRegisteredSchools] = useState<SchoolRecord[]>([]);
@@ -196,45 +302,118 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
     }
   }, [block]);
 
-  const fetchGeolocation = () => {
-    if (!navigator.geolocation) {
-      setGeo({ lat: "25.5138", lng: "91.8933" });
-      return;
-    }
-    setGeoLoading(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setGeo({
-          lat: pos.coords.latitude.toFixed(4),
-          lng: pos.coords.longitude.toFixed(4)
-        });
-        setGeoLoading(false);
-      },
-      () => {
-        // Fallback East Khasi Hills coordinates
-        setGeo({ lat: "25.5138", lng: "91.8933" });
-        setGeoLoading(false);
-      },
-      { timeout: 5000 }
-    );
+  // Promise-based so the photo-stamping flow can await a coordinate before
+  // burning it into the image, while the "Auto Detect" button can keep
+  // firing it without caring about the result.
+  const resolveGeolocation = (): Promise<{ lat: string; lng: string }> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        const fallback = { lat: "25.5138", lng: "91.8933" };
+        setGeo(fallback);
+        resolve(fallback);
+        return;
+      }
+      setGeoLoading(true);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const g = { lat: pos.coords.latitude.toFixed(4), lng: pos.coords.longitude.toFixed(4) };
+          setGeo(g);
+          setGeoLoading(false);
+          resolve(g);
+        },
+        () => {
+          // Fallback East Khasi Hills coordinates
+          const fallback = { lat: "25.5138", lng: "91.8933" };
+          setGeo(fallback);
+          setGeoLoading(false);
+          resolve(fallback);
+        },
+        { timeout: 5000 }
+      );
+    });
   };
 
+  const fetchGeolocation = () => { resolveGeolocation(); };
+
+  const isValidWholeNumber = (v: string) => /^\d+$/.test(v) && !(v.length > 1 && v[0] === '0');
+
   const canContinue = () => {
-    if (step === 0) return block !== "" && schoolName.trim().length > 0 && schoolCategories.length > 0;
-    if (step === 1) return attendanceBoys !== "" && attendanceGirls !== "";
-    if (step === 2) return true;
+    if (step === 0) {
+      return (
+        block !== "" &&
+        schoolName.trim().length > 0 &&
+        schoolCategories.length > 0 &&
+        managementType !== "" &&
+        inspectorName.trim().length > 0
+      );
+    }
+    if (step === 1) {
+      return (
+        isValidWholeNumber(attendanceBoys) &&
+        isValidWholeNumber(attendanceGirls) &&
+        isValidWholeNumber(aadhaarBoys) &&
+        isValidWholeNumber(aadhaarGirls)
+      );
+    }
+    if (step === 2) {
+      if (kitchenShed === "no" && kitchenShedReason.trim().length === 0) return false;
+      if (waterSupply === "no" && waterSupplyReason.trim().length === 0) return false;
+      if (kitchenGarden === "yes" && kitchenGardenType === "") return false;
+      if (kitchenGarden === "no" && kitchenGardenReason.trim().length === 0) return false;
+      if (foodgrainsDelivered === "no" && foodgrainsReportedSDSEO === "no" && foodgrainsNoReportReason.trim().length === 0) return false;
+      return true;
+    }
+    if (step === 3) {
+      if (submittedSDSEO === "yes" && (monthlyFormMonth.trim().length === 0 || utilizationCertMonth.trim().length === 0)) return false;
+      if (submittedSDSEO === "no" && sdseoNonSubmissionReason.trim().length === 0) return false;
+      if (meghSimsDaily === "no" && meghSimsNoReason.trim().length === 0) return false;
+      if (mealsServedAllFiveDays === "no") {
+        if (!isValidWholeNumber(missedMealDaysCount) || Number(missedMealDaysCount) < 1) return false;
+        if (missedMealDaysReason.trim().length === 0) return false;
+      }
+      return true;
+    }
+    if (step === 4) {
+      // Don't let anyone move on (or submit) while the GPS/address/school
+      // stamp is still being burned into the photo.
+      if (stamping) return false;
+      return true;
+    }
     return true;
   };
 
+  // Reads the captured/chosen photo, resolves a GPS fix if we don't already
+  // have one, best-effort reverse-geocodes an address, then burns all of it
+  // — plus school, block, inspector name and the timestamp — permanently
+  // into the image before it's ever shown or saved.
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      setPhoto(ev.target?.result as string);
+    reader.onload = async (ev) => {
+      const rawDataUrl = ev.target?.result as string;
+      setStamping(true);
+      try {
+        const activeGeo = geo || await resolveGeolocation();
+        const address = await reverseGeocode(activeGeo.lat, activeGeo.lng).catch(() => null);
+        const stamped = await stampPhoto(rawDataUrl, {
+          latitude: activeGeo.lat,
+          longitude: activeGeo.lng,
+          address,
+          schoolName: schoolName.trim() || undefined,
+          block: block || undefined,
+          inspectorName: inspectorName.trim() || undefined,
+          when: new Date()
+        });
+        setPhoto(stamped);
+      } catch (err) {
+        console.error('Could not GPS-stamp photo, using original capture instead', err);
+        setPhoto(rawDataUrl);
+      } finally {
+        setStamping(false);
+      }
     };
     reader.readAsDataURL(file);
-    if (!geo) fetchGeolocation();
   };
 
   const handleSubmit = async () => {
@@ -571,13 +750,14 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                       setSchoolName("");
                     }}
                     onFocus={() => setFocusedField("block")}
-                    onBlur={() => setFocusedField(null)}
+                    onBlur={() => { setFocusedField(null); markTouched("block"); }}
                     style={{ ...inputBase, cursor: "pointer", appearance: "none" }}
                   >
                     <option value="" disabled style={{ background: "#FFFFFF", color: "#111827" }}>Select Block...</option>
                     {INITIAL_BLOCKS.map((b) => <option key={b} value={b} style={{ background: "#FFFFFF", color: "#111827" }}>{b} Block</option>)}
                   </select>
                 </FloatingField>
+                <InlineError show={touched.block && block === ""} message="Please select a block." />
 
                 <FloatingField
                   icon={Building2}
@@ -591,7 +771,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                     value={schoolName}
                     onChange={(e) => setSchoolName(e.target.value)}
                     onFocus={() => setFocusedField("school")}
-                    onBlur={() => setFocusedField(null)}
+                    onBlur={() => { setFocusedField(null); markTouched("schoolName"); }}
                     style={inputBase}
                     list="registered-schools-list"
                   />
@@ -601,6 +781,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                     ))}
                   </datalist>
                 </FloatingField>
+                <InlineError show={touched.schoolName && schoolName.trim().length === 0} message="School name is required." />
 
                 {/* School Category */}
                 <div style={{ marginTop: 4 }}>
@@ -650,7 +831,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                         <button
                           key={type}
                           type="button"
-                          onClick={() => setManagementType(type)}
+                          onClick={() => { setManagementType(type); markTouched("managementType"); }}
                           style={{
                             padding: "6px 16px",
                             borderRadius: 20,
@@ -679,13 +860,17 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                 >
                   <input
                     type="text"
+                    placeholder="e.g. Bah K. Lyngdoh (Block Officer)"
                     value={inspectorName}
                     onChange={(e) => setInspectorName(e.target.value)}
                     onFocus={() => setFocusedField("inspector")}
-                    onBlur={() => setFocusedField(null)}
+                    onBlur={() => { setFocusedField(null); markTouched("inspectorName"); }}
                     style={inputBase}
                   />
                 </FloatingField>
+                <InlineError show={touched.inspectorName && inspectorName.trim().length === 0} message="Inspector name is required." />
+
+                <InlineError show={(touched.managementType || touched.schoolName) && managementType === ""} message="Select a management type to continue." />
               </>
             )}
 
@@ -754,39 +939,49 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                     Student Attendance Today
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                    <FloatingField
-                      icon={Users}
-                      label="BOYS"
-                      active={focusedField === "attBoys"}
-                      filled={attendanceBoys !== "" && attendanceBoys !== "0"}
-                    >
-                      <input
-                        type="number"
-                        min="0"
-                        value={attendanceBoys}
-                        onChange={(e) => setAttendanceBoys(e.target.value)}
-                        onFocus={() => setFocusedField("attBoys")}
-                        onBlur={() => setFocusedField(null)}
-                        style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
-                      />
-                    </FloatingField>
+                    <div>
+                      <FloatingField
+                        icon={Users}
+                        label="BOYS"
+                        active={focusedField === "attBoys"}
+                        filled={attendanceBoys !== ""}
+                      >
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          placeholder="e.g. 45"
+                          value={attendanceBoys}
+                          onChange={(e) => setAttendanceBoys(e.target.value)}
+                          onFocus={() => setFocusedField("attBoys")}
+                          onBlur={() => { setFocusedField(null); markTouched("attendanceBoys"); }}
+                          style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
+                        />
+                      </FloatingField>
+                      <InlineError show={touched.attendanceBoys && !isValidWholeNumber(attendanceBoys)} message="Whole number required." />
+                    </div>
 
-                    <FloatingField
-                      icon={Users}
-                      label="GIRLS"
-                      active={focusedField === "attGirls"}
-                      filled={attendanceGirls !== "" && attendanceGirls !== "0"}
-                    >
-                      <input
-                        type="number"
-                        min="0"
-                        value={attendanceGirls}
-                        onChange={(e) => setAttendanceGirls(e.target.value)}
-                        onFocus={() => setFocusedField("attGirls")}
-                        onBlur={() => setFocusedField(null)}
-                        style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
-                      />
-                    </FloatingField>
+                    <div>
+                      <FloatingField
+                        icon={Users}
+                        label="GIRLS"
+                        active={focusedField === "attGirls"}
+                        filled={attendanceGirls !== ""}
+                      >
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          placeholder="e.g. 38"
+                          value={attendanceGirls}
+                          onChange={(e) => setAttendanceGirls(e.target.value)}
+                          onFocus={() => setFocusedField("attGirls")}
+                          onBlur={() => { setFocusedField(null); markTouched("attendanceGirls"); }}
+                          style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
+                        />
+                      </FloatingField>
+                      <InlineError show={touched.attendanceGirls && !isValidWholeNumber(attendanceGirls)} message="Whole number required." />
+                    </div>
                   </div>
                 </div>
 
@@ -796,39 +991,49 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                     Students with Aadhaar
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                    <FloatingField
-                      icon={Users}
-                      label="BOYS"
-                      active={focusedField === "aadhBoys"}
-                      filled={aadhaarBoys !== "" && aadhaarBoys !== "0"}
-                    >
-                      <input
-                        type="number"
-                        min="0"
-                        value={aadhaarBoys}
-                        onChange={(e) => setAadhaarBoys(e.target.value)}
-                        onFocus={() => setFocusedField("aadhBoys")}
-                        onBlur={() => setFocusedField(null)}
-                        style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
-                      />
-                    </FloatingField>
+                    <div>
+                      <FloatingField
+                        icon={Users}
+                        label="BOYS"
+                        active={focusedField === "aadhBoys"}
+                        filled={aadhaarBoys !== ""}
+                      >
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          placeholder="e.g. 40"
+                          value={aadhaarBoys}
+                          onChange={(e) => setAadhaarBoys(e.target.value)}
+                          onFocus={() => setFocusedField("aadhBoys")}
+                          onBlur={() => { setFocusedField(null); markTouched("aadhaarBoys"); }}
+                          style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
+                        />
+                      </FloatingField>
+                      <InlineError show={touched.aadhaarBoys && !isValidWholeNumber(aadhaarBoys)} message="Whole number required." />
+                    </div>
 
-                    <FloatingField
-                      icon={Users}
-                      label="GIRLS"
-                      active={focusedField === "aadhGirls"}
-                      filled={aadhaarGirls !== "" && aadhaarGirls !== "0"}
-                    >
-                      <input
-                        type="number"
-                        min="0"
-                        value={aadhaarGirls}
-                        onChange={(e) => setAadhaarGirls(e.target.value)}
-                        onFocus={() => setFocusedField("aadhGirls")}
-                        onBlur={() => setFocusedField(null)}
-                        style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
-                      />
-                    </FloatingField>
+                    <div>
+                      <FloatingField
+                        icon={Users}
+                        label="GIRLS"
+                        active={focusedField === "aadhGirls"}
+                        filled={aadhaarGirls !== ""}
+                      >
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          placeholder="e.g. 35"
+                          value={aadhaarGirls}
+                          onChange={(e) => setAadhaarGirls(e.target.value)}
+                          onFocus={() => setFocusedField("aadhGirls")}
+                          onBlur={() => { setFocusedField(null); markTouched("aadhaarGirls"); }}
+                          style={{ ...inputBase, fontSize: 16, fontWeight: 700 }}
+                        />
+                      </FloatingField>
+                      <InlineError show={touched.aadhaarGirls && !isValidWholeNumber(aadhaarGirls)} message="Whole number required." />
+                    </div>
                   </div>
                 </div>
               </>
@@ -953,10 +1158,11 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                           value={kitchenShedReason}
                           onChange={(e) => setKitchenShedReason(e.target.value)}
                           onFocus={() => setFocusedField("kitchenShedReason")}
-                          onBlur={() => setFocusedField(null)}
+                          onBlur={() => { setFocusedField(null); markTouched("kitchenShedReason"); }}
                           style={inputBase}
                         />
                       </FloatingField>
+                      <InlineError show={touched.kitchenShedReason && kitchenShedReason.trim().length === 0} message="A reason is required when Kitchen Shed is Not Functional." />
                     </div>
                   )}
                 </div>
@@ -1062,10 +1268,11 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                               value={foodgrainsNoReportReason}
                               onChange={(e) => setFoodgrainsNoReportReason(e.target.value)}
                               onFocus={() => setFocusedField("foodgrainsNotReportedReason")}
-                              onBlur={() => setFocusedField(null)}
+                              onBlur={() => { setFocusedField(null); markTouched("foodgrainsNoReportReason"); }}
                               style={inputBase}
                             />
                           </FloatingField>
+                          <InlineError show={touched.foodgrainsNoReportReason && foodgrainsNoReportReason.trim().length === 0} message="A reason is required." />
                         </div>
                       )}
                     </div>
@@ -1132,10 +1339,11 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                           value={waterSupplyReason}
                           onChange={(e) => setWaterSupplyReason(e.target.value)}
                           onFocus={() => setFocusedField("waterReason")}
-                          onBlur={() => setFocusedField(null)}
+                          onBlur={() => { setFocusedField(null); markTouched("waterSupplyReason"); }}
                           style={inputBase}
                         />
                       </FloatingField>
+                      <InlineError show={touched.waterSupplyReason && waterSupplyReason.trim().length === 0} message="A reason is required when water supply is not functional." />
                     </div>
                   )}
                 </div>
@@ -1202,7 +1410,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                             <button
                               key={opt.id}
                               type="button"
-                              onClick={() => setKitchenGardenType(opt.id)}
+                              onClick={() => { setKitchenGardenType(opt.id); markTouched("kitchenGardenType"); }}
                               style={{
                                 padding: "10px 8px",
                                 borderRadius: 12,
@@ -1221,6 +1429,7 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                           );
                         })}
                       </div>
+                      <InlineError show={touched.kitchenGardenType && kitchenGardenType === ""} message="Select a garden setup type." />
                     </div>
                   )}
 
@@ -1239,10 +1448,11 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                           value={kitchenGardenReason}
                           onChange={(e) => setKitchenGardenReason(e.target.value)}
                           onFocus={() => setFocusedField("gardenReason")}
-                          onBlur={() => setFocusedField(null)}
+                          onBlur={() => { setFocusedField(null); markTouched("kitchenGardenReason"); }}
                           style={inputBase}
                         />
                       </FloatingField>
+                      <InlineError show={touched.kitchenGardenReason && kitchenGardenReason.trim().length === 0} message="A reason is required." />
                     </div>
                   )}
                 </div>
@@ -1355,44 +1565,32 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                   </div>
                 </div>
 
-                {/* Conditional Month Input Boxes if submitted to SDSEO is Yes */}
+                {/* Conditional Month/Year Pickers if submitted to SDSEO is Yes */}
                 {submittedSDSEO === "yes" && (
                   <>
                     {/* Field 1: Monthly Form Submitted Upto Month */}
-                    <FloatingField
+                    <MonthYearField
                       icon={FileText}
                       label="MONTHLY FORM SUBMITTED UPTO WHICH MONTH"
+                      value={monthlyFormMonth}
+                      onChange={setMonthlyFormMonth}
                       active={focusedField === "monthlyFormMonth"}
-                      filled={monthlyFormMonth.trim().length > 0}
-                    >
-                      <input
-                        type="text"
-                        placeholder="e.g. June 2026"
-                        value={monthlyFormMonth}
-                        onChange={(e) => setMonthlyFormMonth(e.target.value)}
-                        onFocus={() => setFocusedField("monthlyFormMonth")}
-                        onBlur={() => setFocusedField(null)}
-                        style={inputBase}
-                      />
-                    </FloatingField>
+                      onFocusField={() => setFocusedField("monthlyFormMonth")}
+                      onBlurField={() => { setFocusedField(null); markTouched("monthlyFormMonth"); }}
+                    />
+                    <InlineError show={touched.monthlyFormMonth && monthlyFormMonth.trim().length === 0} message="Required when Monthly Form/UC submission is Yes." />
 
                     {/* Field 2: Utilization Certificate Submitted Upto Month */}
-                    <FloatingField
+                    <MonthYearField
                       icon={FileText}
                       label="UTILIZATION CERTIFICATE SUBMITTED UPTO WHICH MONTH"
+                      value={utilizationCertMonth}
+                      onChange={setUtilizationCertMonth}
                       active={focusedField === "utilizationCertMonth"}
-                      filled={utilizationCertMonth.trim().length > 0}
-                    >
-                      <input
-                        type="text"
-                        placeholder="e.g. May 2026"
-                        value={utilizationCertMonth}
-                        onChange={(e) => setUtilizationCertMonth(e.target.value)}
-                        onFocus={() => setFocusedField("utilizationCertMonth")}
-                        onBlur={() => setFocusedField(null)}
-                        style={inputBase}
-                      />
-                    </FloatingField>
+                      onFocusField={() => setFocusedField("utilizationCertMonth")}
+                      onBlurField={() => { setFocusedField(null); markTouched("utilizationCertMonth"); }}
+                    />
+                    <InlineError show={touched.utilizationCertMonth && utilizationCertMonth.trim().length === 0} message="Required when Monthly Form/UC submission is Yes." />
                   </>
                 )}
 
@@ -1411,10 +1609,11 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                         value={sdseoNonSubmissionReason}
                         onChange={(e) => setSdseoNonSubmissionReason(e.target.value)}
                         onFocus={() => setFocusedField("sdseoReason")}
-                        onBlur={() => setFocusedField(null)}
+                        onBlur={() => { setFocusedField(null); markTouched("sdseoNonSubmissionReason"); }}
                         style={inputBase}
                       />
                     </FloatingField>
+                    <InlineError show={touched.sdseoNonSubmissionReason && sdseoNonSubmissionReason.trim().length === 0} message="A reason is required." />
                   </div>
                 )}
 
@@ -1475,10 +1674,11 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                           value={meghSimsNoReason}
                           onChange={(e) => setMeghSimsNoReason(e.target.value)}
                           onFocus={() => setFocusedField("meghSimsReason")}
-                          onBlur={() => setFocusedField(null)}
+                          onBlur={() => { setFocusedField(null); markTouched("meghSimsNoReason"); }}
                           style={inputBase}
                         />
                       </FloatingField>
+                      <InlineError show={touched.meghSimsNoReason && meghSimsNoReason.trim().length === 0} message="A reason is required." />
                     </div>
                   )}
                 </div>
@@ -1539,17 +1739,21 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                         filled={missedMealDaysCount.trim().length > 0}
                       >
                         <input
-                          type="number"
-                          min="0"
-                          max="5"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
                           placeholder="e.g. 2"
                           value={missedMealDaysCount}
                           onChange={(e) => setMissedMealDaysCount(e.target.value)}
                           onFocus={() => setFocusedField("missedMealDaysCount")}
-                          onBlur={() => setFocusedField(null)}
+                          onBlur={() => { setFocusedField(null); markTouched("missedMealDaysCount"); }}
                           style={inputBase}
                         />
                       </FloatingField>
+                      <InlineError
+                        show={touched.missedMealDaysCount && (!isValidWholeNumber(missedMealDaysCount) || Number(missedMealDaysCount) < 1)}
+                        message="Enter a whole number of at least 1 (this field only shows when meals were missed)."
+                      />
 
                       <div style={{ marginTop: 4 }}>
                         <FloatingField
@@ -1564,10 +1768,11 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                             value={missedMealDaysReason}
                             onChange={(e) => setMissedMealDaysReason(e.target.value)}
                             onFocus={() => setFocusedField("missedMealDaysReason")}
-                            onBlur={() => setFocusedField(null)}
+                            onBlur={() => { setFocusedField(null); markTouched("missedMealDaysReason"); }}
                             style={inputBase}
                           />
                         </FloatingField>
+                        <InlineError show={touched.missedMealDaysReason && missedMealDaysReason.trim().length === 0} message="A reason is required." />
                       </div>
                     </>
                   )}
@@ -1677,8 +1882,28 @@ export function InspectionFlow({ onSave, onDoneViewDashboard }: InspectionFlowPr
                     }}>
                       <MapPin size={13} color={c.forest} />
                       <span style={{ fontSize: 11, fontWeight: 600, color: c.ink }}>
-                        {geo ? `Lat: ${geo.lat}, Lng: ${geo.lng}` : 'Geo-tagging...'}
+                        {geo ? `GPS-stamped \u00b7 ${geo.lat}, ${geo.lng}` : 'Geo-tagging...'}
                       </span>
+                    </div>
+                  </div>
+                ) : stamping ? (
+                  <div style={{
+                    borderRadius: 18,
+                    border: `1.5px dashed ${c.forest}`,
+                    background: "#E8F5E9",
+                    padding: "32px 20px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 12
+                  }}>
+                    <Loader2 size={28} color={c.forest} className="spin" />
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: c.ink }}>Stamping photo…</div>
+                      <div style={{ fontSize: 11, color: c.textSecondary, marginTop: 2 }}>
+                        Burning in GPS location, address, date/time, school, block & inspector name
+                      </div>
                     </div>
                   </div>
                 ) : (

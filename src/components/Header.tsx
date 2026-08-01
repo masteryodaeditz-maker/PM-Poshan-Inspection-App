@@ -100,7 +100,7 @@ export function Header({ activeTab, setActiveTab, role, onLogout }: HeaderProps)
 
         {/* Right Quick Badges */}
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {activeTab !== 'inspection' && (
+          {role !== 'admin' && activeTab !== 'inspection' && (
             <button
               onClick={() => setActiveTab('inspection')}
               style={{
@@ -159,7 +159,7 @@ export function Header({ activeTab, setActiveTab, role, onLogout }: HeaderProps)
         boxSizing: "border-box"
       }}>
         {[
-          { id: "inspection", label: isMobile ? "Inspect" : "Inspect Form", icon: ClipboardCheck },
+          ...(role === 'admin' ? [] : [{ id: "inspection", label: isMobile ? "Inspect" : "Inspect Form", icon: ClipboardCheck }]),
           ...(role === 'admin' ? [{ id: "dashboard", label: "Dashboard", icon: LayoutDashboard }] : [])
         ].map(tab => {
           const isActive = activeTab === tab.id;

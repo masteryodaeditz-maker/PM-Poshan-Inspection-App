@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Building2, Search, Filter, Calendar, Users, CheckCircle2, ChevronRight, Plus } from 'lucide-react';
-import { SchoolRecord, BlockName } from '../types';
+import { Building2, Search, Filter, Calendar, Users, CheckCircle2, Plus } from 'lucide-react';
+import { SchoolRecord } from '../types';
 import { getSchools } from '../utils/storage';
 import { INITIAL_BLOCKS } from '../data/mockData';
 
@@ -16,11 +16,7 @@ const c = {
   terracotta: "#DC2626"
 };
 
-interface SchoolDirectoryProps {
-  onInspectSchool: (schoolName: string, block: BlockName, category: any) => void;
-}
-
-export function SchoolDirectory({ onInspectSchool }: SchoolDirectoryProps) {
+export function SchoolDirectory() {
   const [schools, setSchools] = useState<SchoolRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -179,29 +175,10 @@ export function SchoolDirectory({ onInspectSchool }: SchoolDirectoryProps) {
               </div>
             </div>
 
-            <div style={{ borderTop: `1px solid ${c.line}`, paddingTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ borderTop: `1px solid ${c.line}`, paddingTop: 12 }}>
               <span style={{ fontSize: 11, color: c.textSecondary, display: "flex", alignItems: "center", gap: 4 }}>
                 <Calendar size={12} /> Last: {school.lastInspected ? new Date(school.lastInspected).toLocaleDateString() : 'Pending'}
               </span>
-
-              <button
-                onClick={() => onInspectSchool(school.name, school.block, school.category)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: "6px 12px",
-                  borderRadius: 8,
-                  background: c.mint,
-                  color: c.forest,
-                  border: "none",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: "pointer"
-                }}
-              >
-                Inspect Now <ChevronRight size={14} />
-              </button>
             </div>
           </div>
         ))}

@@ -1,5 +1,6 @@
 import { InspectionRecord, SchoolRecord, BlockName, SchoolCategory, ExportLogEntry, ExportType } from '../types';
 import { supabase, INSPECTION_PHOTOS_BUCKET } from './supabaseClient';
+import * as XLSX from 'xlsx-js-style';
 
 const SIGNED_URL_TTL_SECONDS = 60 * 60 * 24; // 24 hours — covers a full working session / Friday export run
 
@@ -368,102 +369,102 @@ export function exportInspectionsCSV(inspections: InspectionRecord[], rangeLabel
   logExport('csv', rangeLabel?.start ?? null, rangeLabel?.end ?? null, inspections.length).catch(e => console.error('Could not log export', e));
 }
 
-// ---------- Clear all data (Supabase-backed) ----------
+// ---------- Generic formatted .xlsx export (used by all Dashboard drill-downs) ----------
 
-export async function clearAllData(deletePassword: string) {
-  const confirmed = window.confirm(
-    'This will permanently delete every inspection, school record, and photo from the shared Supabase project for everyone. This cannot be undone. Continue?'
-  );
-  if (!confirmed) return;
-
-  // Remove photos from storage first
-  const { data: rows } = await supabase.from('inspections').select('photo_path');
-  const paths = (rows || []).map((r) => r.photo_path).filter(Boolean) as string[];
-  if (paths.length > 0) {
-    const { error: removeError } = await supabase.storage.from(INSPECTION_PHOTOS_BUCKET).remove(paths);
-    if (removeError) console.error('Error removing photos', removeError);
-  }
-
-  // Row deletes go through a Postgres function that re-checks the caller is an
-  // authenticated admin AND the delete password, entirely server-side. There is
-  // nothing here for someone to crack from the JS bundle — the password hash
-  // never leaves Postgres.
-  const { error: rpcError } = await supabase.rpc('admin_clear_all_data', { delete_password: deletePassword });
-  if (rpcError) {
-    if (rpcError.message.includes('Incorrect delete password')) throw new Error('Incorrect delete password.');
-    console.error('Could not clear data', rpcError);
-    throw new Error('Could not clear data. Please try again.');
-  }
-
-  window.location.reload();
+export interface XlsxColumn {
+  header: string;
+  width?: number; // character width; a sensible default is used if omitted
+  // Pulls the cell value for one row. Return a primitive (string/number) —
+  // dates should already be formatted to a display string by the caller.
+  value: (row: any) => string | number | null | undefined;
 }
 
-// Delete only the photo files for inspections in [startISO, endISO] (either bound can be null =
-// open-ended). Keeps every inspection record — school, attendance, checklist, everything —
-// just clears the photo_path so the record no longer has an attached image.
-export async function clearPhotosInRange(startISO: string | null, endISO: string | null, deletePassword: string): Promise<number> {
-  const { error: verifyError } = await supabase.rpc('admin_verify_delete_password', { candidate: deletePassword });
-  if (verifyError) {
-    if (verifyError.message.includes('Incorrect delete password')) throw new Error('Incorrect delete password.');
-    console.error('Could not verify delete password', verifyError);
-    throw new Error('Could not verify password. Please try again.');
+const XLSX_HEADER_STYLE = {
+  font: { bold: true, color: { rgb: 'FFFFFFFF' } },
+  fill: { fgColor: { rgb: 'FF0F4C3A' } },
+  alignment: { vertical: 'center', horizontal: 'left', wrapText: true },
+};
+
+/**
+ * Builds a single-sheet .xlsx file with a bold/colored header row, sensible
+ * column widths, and an autofilter dropdown on every column — then triggers
+ * a browser download. Used for every drill-down table export on the Dashboard.
+ */
+export function exportRowsXLSX(
+  rows: any[],
+  columns: XlsxColumn[],
+  filenameBase: string,
+  sheetName: string = 'Data'
+) {
+  const headerRow = columns.map(c => c.header);
+  const dataRows = rows.map(row => columns.map(c => {
+    const v = c.value(row);
+    return v === null || v === undefined ? '' : v;
+  }));
+
+  const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+
+  // Bold, colored header row
+  for (let col = 0; col < columns.length; col++) {
+    const cellRef = XLSX.utils.encode_cell({ r: 0, c: col });
+    if (ws[cellRef]) ws[cellRef].s = XLSX_HEADER_STYLE;
   }
 
-  let query = supabase.from('inspections').select('id, photo_path').not('photo_path', 'is', null);
-  if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
-  if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
-  const { data, error } = await query;
-  if (error) { console.error('Could not find photos to delete', error); throw new Error('Could not find photos to delete. Please try again.'); }
-
-  const rows = data || [];
-  const paths = rows.map((r) => r.photo_path).filter(Boolean) as string[];
-
-  if (paths.length > 0) {
-    const { error: removeError } = await supabase.storage.from(INSPECTION_PHOTOS_BUCKET).remove(paths);
-    if (removeError) { console.error('Could not delete photo files', removeError); throw new Error('Could not delete photo files. Please try again.'); }
-  }
-  if (rows.length > 0) {
-    const ids = rows.map((r) => r.id);
-    const { error: updateError } = await supabase.from('inspections').update({ photo_path: null }).in('id', ids);
-    if (updateError) { console.error('Could not clear photo references', updateError); throw new Error('Could not update photo records. Please try again.'); }
-  }
-  return rows.length;
-}
-
-// Delete inspection records (and their photos) in [startISO, endISO]. Leaves the schools
-// table untouched — compliance stats stay as they were computed at the time.
-export async function clearDataInRange(startISO: string | null, endISO: string | null, deletePassword: string): Promise<number> {
-  let query = supabase.from('inspections').select('id, photo_path');
-  if (startISO) query = query.gte('created_at', `${startISO}T00:00:00`);
-  if (endISO) query = query.lte('created_at', `${endISO}T23:59:59`);
-  const { data, error } = await query;
-  if (error) { console.error('Could not find inspections to delete', error); throw new Error('Could not find inspections to delete. Please try again.'); }
-
-  const rows = data || [];
-  const paths = rows.map((r) => r.photo_path).filter(Boolean) as string[];
-
-  if (paths.length > 0) {
-    const { error: removeError } = await supabase.storage.from(INSPECTION_PHOTOS_BUCKET).remove(paths);
-    if (removeError) console.error('Error removing some photos', removeError);
-  }
-
-  // Deletion itself runs server-side via a function that re-checks the admin
-  // role AND the delete password, rather than a raw .delete() call from the browser.
-  const { data: deletedCount, error: rpcError } = await supabase.rpc('admin_clear_data_range', {
-    start_date: startISO,
-    end_date: endISO,
-    delete_password: deletePassword,
+  // Column widths — use the provided width, or size to the header/content length
+  ws['!cols'] = columns.map((c, idx) => {
+    if (c.width) return { wch: c.width };
+    const longestContent = dataRows.reduce((max, r) => {
+      const cellStr = String(r[idx] ?? '');
+      return Math.max(max, cellStr.length);
+    }, c.header.length);
+    return { wch: Math.min(Math.max(longestContent + 2, 12), 45) };
   });
-  if (rpcError) {
-    if (rpcError.message.includes('Incorrect delete password')) throw new Error('Incorrect delete password.');
-    console.error('Could not delete inspections', rpcError);
-    throw new Error('Could not delete inspections. Please try again.');
-  }
 
-  return (deletedCount as number) ?? rows.length;
+  // Filter dropdowns on the header row across the full data range
+  const lastCol = XLSX.utils.encode_col(columns.length - 1);
+  const lastRow = dataRows.length + 1;
+  ws['!autofilter'] = { ref: `A1:${lastCol}${lastRow}` };
+
+  // Freeze the header row so it stays visible while scrolling
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+  const dateSuffix = new Date().toISOString().split('T')[0];
+  XLSX.writeFile(wb, `${filenameBase}_${dateSuffix}.xlsx`);
 }
 
-// ---------- Export tracking (Weekly Export Tracker on the Dashboard) ----------
+export function exportInspectionsXLSX(inspections: InspectionRecord[], rangeLabel?: { start: string | null; end: string | null }) {
+  const columns: XlsxColumn[] = [
+    { header: 'Timestamp', width: 18, value: (i: InspectionRecord) => new Date(i.timestamp).toLocaleString() },
+    { header: 'Block', width: 16, value: (i: InspectionRecord) => i.block },
+    { header: 'School Name', width: 28, value: (i: InspectionRecord) => i.schoolName },
+    { header: 'Category', width: 12, value: (i: InspectionRecord) => i.schoolCategory },
+    { header: 'Inspector', width: 18, value: (i: InspectionRecord) => i.inspectorName || '' },
+    { header: 'Meal Served', width: 12, value: (i: InspectionRecord) => i.mealServed === 'yes' ? 'Served' : 'Missed' },
+    { header: 'Students Served', width: 14, value: (i: InspectionRecord) => i.studentCount },
+    { header: 'Kitchen Functional', width: 16, value: (i: InspectionRecord) => i.kitchenShed === 'yes' ? 'Yes' : i.kitchenShed === 'no' ? 'No' : '' },
+    { header: 'Water Supply', width: 14, value: (i: InspectionRecord) => i.waterSupply === 'yes' ? 'Yes' : i.waterSupply === 'no' ? 'No' : '' },
+    { header: 'Foodgrain Delivered', width: 16, value: (i: InspectionRecord) => i.foodgrainsDelivered === 'yes' ? 'Yes' : i.foodgrainsDelivered === 'no' ? 'No' : '' },
+    { header: 'Meals All 5 Days', width: 16, value: (i: InspectionRecord) => i.mealsServedAllFiveDays === 'yes' ? 'Yes' : i.mealsServedAllFiveDays === 'no' ? 'No' : '' },
+    { header: 'Remarks', width: 30, value: (i: InspectionRecord) => i.remarks || '' },
+  ];
+
+  const filenameDateSuffix = rangeLabel && (rangeLabel.start || rangeLabel.end)
+    ? `${rangeLabel.start || 'start'}_to_${rangeLabel.end || 'now'}`
+    : 'all_time';
+  exportRowsXLSX(inspections, columns, `PM_Poshan_Inspections_${filenameDateSuffix}`, 'Inspections');
+
+  logExport('xlsx', rangeLabel?.start ?? null, rangeLabel?.end ?? null, inspections.length).catch(e => console.error('Could not log export', e));
+}
+
+// Note: bulk delete of inspection data/photos is intentionally not exposed in this
+// app. Photos live in a real Supabase Storage bucket and can be deleted directly
+// from the Supabase dashboard without touching the `inspections` table — deleting
+// a photo file there never removes or alters the underlying inspection record.
+
+// ---------- Export tracking ----------
 
 export async function logExport(exportType: ExportType, rangeStart: string | null, rangeEnd: string | null, recordCount: number) {
   const row = {

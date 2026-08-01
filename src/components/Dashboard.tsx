@@ -1,14 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Utensils, Users, ClipboardCheck, AlertCircle, TrendingUp, Download,
-  Filter, Search, MapPin, CheckCircle2, X, Calendar, Trash2,
-  Building2, Camera, ArrowUpRight, ShieldCheck, FolderDown, LayoutGrid,
-  UserCheck, AlertTriangle, BarChart3
+  ClipboardCheck, Download,
+  Filter, Search, CheckCircle2, X, Calendar,
+  Building2, Camera, ShieldCheck, FolderDown, LayoutGrid,
+  UserCheck, AlertTriangle, AlertCircle, BarChart3, ChevronRight,
+  Droplets, Wheat, UtensilsCrossed, Flame, ImageOff
 } from 'lucide-react';
 import { InspectionRecord, BlockName, ExportLogEntry, ExportType } from '../types';
 import { INITIAL_BLOCKS } from '../data/mockData';
-import { exportInspectionsCSV, clearAllData, clearPhotosInRange, clearDataInRange, downloadInspectionPhoto, exportPhotosZip, getExportLog } from '../utils/storage';
+import { exportInspectionsXLSX, downloadInspectionPhoto, exportPhotosZip, getExportLog } from '../utils/storage';
 import { SchoolDirectory } from './SchoolDirectory';
+import { DrillDownModal, DrillDownColumn } from './DrillDownModal';
+import { SchoolRankModal, SchoolRankRow } from './SchoolRankModal';
 
 import pmPoshanBanner from "../assets/images/poshan_minimal_hero_1785183621105.jpg";
 
@@ -40,26 +43,30 @@ interface DashboardProps {
   onDataChanged: () => void;
 }
 
-export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged }: DashboardProps) {
+export function Dashboard({ inspections, onDataChanged }: DashboardProps) {
   const [dashboardView, setDashboardView] = useState<'overview' | 'schools'>('overview');
   const [selectedBlock, setSelectedBlock] = useState<string>("All");
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPhoto, setSelectedPhoto] = useState<InspectionRecord | null>(null);
+  const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
   const [exportingZip, setExportingZip] = useState(false);
   const [periodFilter, setPeriodFilter] = useState<'7d' | '30d' | '90d' | '12m' | 'all' | 'custom'>('all');
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
   const [exportLog, setExportLog] = useState<ExportLogEntry[]>([]);
-  const [showClearModal, setShowClearModal] = useState(false);
-  const [clearMode, setClearMode] = useState<'photos' | 'all'>('photos');
-  const [clearStart, setClearStart] = useState<string>('');
-  const [clearEnd, setClearEnd] = useState<string>('');
-  const [clearing, setClearing] = useState(false);
-  const [deletePassword, setDeletePassword] = useState('');
-  const [deletePasswordError, setDeletePasswordError] = useState<string | null>(null);
-
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+
+  // Drill-down modal: generic record-list view used by "Schools Inspected" and
+  // each of the 4 "Action Required" categories.
+  type DrillDownKey = 'all' | 'kitchen' | 'water' | 'foodgrain' | 'meals';
+  const [openDrillDown, setOpenDrillDown] = useState<DrillDownKey | null>(null);
+
+  // School-rank modal: generic ranked-school view used by the 3 "Top 5" cards.
+  type RankKey = 'aadhaar' | 'reporting' | 'issues';
+  const [openRankList, setOpenRankList] = useState<RankKey | null>(null);
+  // When someone clicks a school inside a rank list, drop into that school's own records.
+  const [rankSchoolFocus, setRankSchoolFocus] = useState<string | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -72,6 +79,10 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
   useEffect(() => {
     getExportLog().then(setExportLog).catch((e) => console.error('Error loading export log', e));
   }, []);
+
+  useEffect(() => {
+    setPhotoLoadFailed(false);
+  }, [selectedPhoto?.id]);
 
   // ---- Period filter (dashboard-wide) ----
   const PERIOD_LABELS: Record<typeof periodFilter, string> = {
@@ -149,17 +160,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
     { label: 'MeghSIMS Daily Reporting Done', pct: pctYes('meghSimsDaily') },
   ];
 
-  // Top issue reasons this period
-  const topIssues = (() => {
-    const counts = new Map<string, number>();
-    periodInspections.forEach(i => {
-      if (i.issueCategory) counts.set(i.issueCategory, (counts.get(i.issueCategory) || 0) + 1);
-    });
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-  })();
-
   // Inspections trend — last 8 weeks, always fixed regardless of the period selector
   const weeklyTrend = (() => {
     const weeks: { label: string; count: number }[] = [];
@@ -177,43 +177,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
     return weeks;
   })();
   const maxWeeklyCount = Math.max(1, ...weeklyTrend.map(w => w.count));
-
-  // Weekly Export Tracker — "was this week's data exported yet?" for the last 8 weeks
-  const findLatestExport = (type: ExportType, weekStart: Date, weekEnd: Date): ExportLogEntry | null => {
-    const matches = exportLog.filter(e => {
-      if (e.exportType !== type) return false;
-      if (!e.rangeStart && !e.rangeEnd) return true; // an "All Time" export covers every week
-      const eStart = e.rangeStart ? new Date(`${e.rangeStart}T00:00:00`) : new Date(0);
-      const eEnd = e.rangeEnd ? new Date(`${e.rangeEnd}T23:59:59`) : new Date();
-      return eStart <= weekEnd && eEnd >= weekStart;
-    });
-    if (matches.length === 0) return null;
-    return matches.reduce((latest, e) => (new Date(e.exportedAt) > new Date(latest.exportedAt) ? e : latest));
-  };
-  const weeklyExportTracker = (() => {
-    const weeks: {
-      label: string; weekStart: Date; weekEnd: Date; count: number;
-      csvExport: ExportLogEntry | null; photosExport: ExportLogEntry | null;
-    }[] = [];
-    for (let w = 7; w >= 0; w--) {
-      const weekEnd = new Date();
-      weekEnd.setDate(weekEnd.getDate() - w * 7);
-      const weekStart = new Date(weekEnd);
-      weekStart.setDate(weekStart.getDate() - 7);
-      const count = inspections.filter(i => {
-        const t = new Date(i.timestamp);
-        return t >= weekStart && t < weekEnd;
-      }).length;
-      const fmt = (d: Date) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-      weeks.push({
-        label: `${fmt(weekStart)} – ${fmt(weekEnd)}`,
-        weekStart, weekEnd, count,
-        csvExport: findLatestExport('csv', weekStart, weekEnd),
-        photosExport: findLatestExport('photos', weekStart, weekEnd),
-      });
-    }
-    return weeks.reverse(); // most recent week first
-  })();
 
   // Filter inspections (search/block/status, applied on top of the period filter)
   const filteredInspections = periodInspections.filter(i => {
@@ -244,6 +207,97 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
       rate
     };
   });
+
+  // ---- Data behind the new "Schools Inspected" / "Action Required" / "Top 5" cards ----
+
+  // The 4 critical-issue categories, period-scoped
+  const kitchenNotFunctional = periodInspections.filter(i => i.kitchenShed === 'no');
+  const waterUnavailable = periodInspections.filter(i => i.waterSupply === 'no');
+  const foodgrainNotDelivered = periodInspections.filter(i => i.foodgrainsDelivered === 'no');
+  const mealsNotServed = periodInspections.filter(i => i.mealsServedAllFiveDays === 'no');
+
+  // Per-school snapshot, using each school's most recent inspection within the
+  // selected period as its "current state" for ranking purposes.
+  const schoolLatest = (() => {
+    const map = new Map<string, { record: InspectionRecord; block: string; recordCount: number }>();
+    periodInspections.forEach(i => {
+      const existing = map.get(i.schoolName);
+      if (!existing) {
+        map.set(i.schoolName, { record: i, block: i.block, recordCount: 1 });
+      } else {
+        existing.recordCount += 1;
+        if (new Date(i.timestamp) > new Date(existing.record.timestamp)) {
+          existing.record = i;
+        }
+      }
+    });
+    return map;
+  })();
+
+  const REPORTING_FIELDS: (keyof InspectionRecord)[] = ['submittedSDSEO', 'meghSimsDaily', 'foodgrainsReportedSDSEO'];
+  const ISSUE_FIELDS: { field: keyof InspectionRecord }[] = [
+    { field: 'kitchenShed' }, { field: 'waterSupply' }, { field: 'foodgrainsDelivered' }, { field: 'mealsServedAllFiveDays' }
+  ];
+
+  const aadhaarRanked: SchoolRankRow[] = [];
+  const reportingRanked: SchoolRankRow[] = [];
+  const issuesRanked: SchoolRankRow[] = [];
+
+  schoolLatest.forEach(({ record, block, recordCount }, schoolName) => {
+    const attendanceTotal = (record.attendanceBoys || 0) + (record.attendanceGirls || 0);
+    const aadhaarTotal = (record.aadhaarBoys || 0) + (record.aadhaarGirls || 0);
+    if (attendanceTotal > 0) {
+      const pct = Math.round((aadhaarTotal / attendanceTotal) * 100);
+      aadhaarRanked.push({ schoolName, block, metricValue: pct, metricLabel: `${pct}%`, recordCount });
+    }
+
+    const answered = REPORTING_FIELDS.filter(f => record[f] === 'yes' || record[f] === 'no');
+    if (answered.length > 0) {
+      const yes = answered.filter(f => record[f] === 'yes').length;
+      const pct = Math.round((yes / answered.length) * 100);
+      reportingRanked.push({ schoolName, block, metricValue: pct, metricLabel: `${pct}%`, recordCount });
+    }
+
+    const issueCount = ISSUE_FIELDS.filter(({ field }) => record[field] === 'no').length;
+    if (issueCount > 0) {
+      issuesRanked.push({ schoolName, block, metricValue: issueCount, metricLabel: `${issueCount} of 4 issues`, recordCount });
+    }
+  });
+
+  aadhaarRanked.sort((a, b) => a.metricValue - b.metricValue); // lowest coverage first
+  reportingRanked.sort((a, b) => a.metricValue - b.metricValue); // lowest compliance first
+  issuesRanked.sort((a, b) => b.metricValue - a.metricValue); // most issues first
+
+  // Column sets for each drill-down modal (on-screen table + xlsx export, kept in sync)
+  const baseDrillDownColumns: DrillDownColumn[] = [
+    { header: 'School Name', width: 26, value: (r: InspectionRecord) => r.schoolName },
+    { header: 'Block', width: 16, value: (r: InspectionRecord) => r.block },
+    { header: 'Date', width: 14, value: (r: InspectionRecord) => new Date(r.timestamp).toLocaleDateString() },
+    { header: 'Inspector', width: 18, value: (r: InspectionRecord) => r.inspectorName || '' },
+  ];
+  const mealsNotServedColumns: DrillDownColumn[] = [
+    ...baseDrillDownColumns,
+    { header: 'Days Missed', width: 12, value: (r: InspectionRecord) => r.missedMealDaysCount ?? '' },
+    { header: 'Reason', width: 30, value: (r: InspectionRecord) => r.missedMealDaysReason || '' },
+  ];
+
+  const DRILL_DOWN_CONFIG: Record<DrillDownKey, { title: string; subtitle: string; records: InspectionRecord[]; columns: DrillDownColumn[]; filename: string; accent: string }> = {
+    all: { title: 'Schools Inspected', subtitle: PERIOD_LABELS[periodFilter], records: periodInspections, columns: baseDrillDownColumns, filename: 'Schools_Inspected', accent: c.forest },
+    kitchen: { title: 'Kitchen Not Functional', subtitle: PERIOD_LABELS[periodFilter], records: kitchenNotFunctional, columns: baseDrillDownColumns, filename: 'Kitchen_Not_Functional', accent: c.terracotta },
+    water: { title: 'Water Supply Unavailable', subtitle: PERIOD_LABELS[periodFilter], records: waterUnavailable, columns: baseDrillDownColumns, filename: 'Water_Supply_Unavailable', accent: c.terracotta },
+    foodgrain: { title: 'Foodgrain Not Delivered', subtitle: PERIOD_LABELS[periodFilter], records: foodgrainNotDelivered, columns: baseDrillDownColumns, filename: 'Foodgrain_Not_Delivered', accent: c.terracotta },
+    meals: { title: 'Meals Not Served (All 5 Days)', subtitle: PERIOD_LABELS[periodFilter], records: mealsNotServed, columns: mealsNotServedColumns, filename: 'Meals_Not_Served', accent: c.terracotta },
+  };
+
+  const RANK_CONFIG: Record<RankKey, { title: string; subtitle: string; metricColumnLabel: string; rows: SchoolRankRow[]; filename: string }> = {
+    aadhaar: { title: 'Lowest Aadhaar Coverage', subtitle: `${PERIOD_LABELS[periodFilter]} • (Aadhaar-linked ÷ attendance) at each school's latest inspection`, metricColumnLabel: 'Aadhaar Coverage', rows: aadhaarRanked, filename: 'Lowest_Aadhaar_Coverage' },
+    reporting: { title: 'Lowest Reporting Compliance', subtitle: `${PERIOD_LABELS[periodFilter]} • SDSEO / MeghSIMS / foodgrain reporting`, metricColumnLabel: 'Reporting Compliance', rows: reportingRanked, filename: 'Lowest_Reporting_Compliance' },
+    issues: { title: 'Most Critical Issues', subtitle: `${PERIOD_LABELS[periodFilter]} • Kitchen / Water / Foodgrain / Meals flags`, metricColumnLabel: 'Critical Issues', rows: issuesRanked, filename: 'Most_Critical_Issues' },
+  };
+
+  // Records for a single school in the current period, used when someone drills
+  // from a rank list into one specific school.
+  const rankSchoolRecords = rankSchoolFocus ? periodInspections.filter(i => i.schoolName === rankSchoolFocus) : [];
 
   return (
     <div className="fade-in" style={{ padding: isMobile ? "16px 12px" : "32px 24px", maxWidth: 1200, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
@@ -277,7 +331,7 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
                 `Export ${filteredInspections.length} inspections ${rangeText}${blockText}?`
               );
               if (!proceed) return;
-              exportInspectionsCSV(filteredInspections, { start: periodRangeStartISO, end: periodRangeEndISO });
+              exportInspectionsXLSX(filteredInspections, { start: periodRangeStartISO, end: periodRangeEndISO });
               getExportLog().then(setExportLog).catch(() => {});
             }}
             style={{
@@ -298,7 +352,7 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
               whiteSpace: "nowrap"
             }}
           >
-            <Download size={15} /> Export CSV
+            <Download size={15} /> Export Excel
           </button>
 
           <button
@@ -340,24 +394,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
             }}
           >
             <FolderDown size={15} /> {exportingZip ? "Zipping..." : "Export Photos"}
-          </button>
-
-          <button
-            onClick={() => setShowClearModal(true)}
-            title="Manage / clear data"
-            style={{
-              padding: "10px 14px",
-              background: c.paper,
-              border: `1px solid ${c.line}`,
-              borderRadius: 10,
-              cursor: "pointer",
-              color: c.terracotta,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center"
-            }}
-          >
-            <Trash2 size={15} />
           </button>
 
         </div>
@@ -405,7 +441,7 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
       </div>
 
       {dashboardView === 'schools' ? (
-        <SchoolDirectory onInspectSchool={() => onNewInspectionRequested()} />
+        <SchoolDirectory />
       ) : (
       <>
       {/* Period Filter */}
@@ -466,88 +502,116 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
         )}
       </div>
 
-      {/* KPI Cards Grid */}
+      {/* Schools Inspected + Action Required */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(auto-fit, minmax(220px, 1fr))",
-        gap: isMobile ? 10 : 16,
+        gridTemplateColumns: isMobile ? "1fr" : "minmax(220px, 1fr) 2fr",
+        gap: isMobile ? 12 : 16,
         marginBottom: isMobile ? 14 : 18
       }}>
-        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+        {/* Schools Inspected */}
+        <button
+          onClick={() => setOpenDrillDown('all')}
+          style={{
+            background: c.surface, borderRadius: 16, padding: isMobile ? 16 : 22, border: `1px solid ${c.line}`, boxShadow: shadows.sm,
+            cursor: "pointer", textAlign: "left", display: "flex", flexDirection: "column", justifyContent: "space-between", width: "100%"
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
             <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: c.mint, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <Utensils size={isMobile ? 17 : 20} color={c.forest} />
+              <ClipboardCheck size={isMobile ? 17 : 20} color={c.forest} />
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 3, background: c.mint, padding: "2px 6px", borderRadius: 20 }}>
-              <TrendingUp size={11} color={c.forest} />
-              <span style={{ fontSize: 10, fontWeight: 700, color: c.forest }}>{complianceRate}%</span>
-            </div>
+            <ChevronRight size={16} color={c.textFaint} />
           </div>
-          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Total Students Served</div>
-          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>
-            {totalStudentsServed.toLocaleString()}
+          <div>
+            <div style={{ fontSize: isMobile ? 12 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Schools Inspected</div>
+            <div style={{ fontSize: isMobile ? 22 : 28, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>{totalInspections}</div>
+            <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>{PERIOD_LABELS[periodFilter]} • Tap for details</div>
           </div>
-          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>{PERIOD_LABELS[periodFilter]}</div>
-        </div>
+        </button>
 
-        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-            <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: "rgba(124,135,112,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <ClipboardCheck size={isMobile ? 17 : 20} color={c.olive} />
+        {/* Action Required */}
+        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 16 : 22, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={16} color={c.terracotta} />
+              <span style={{ fontSize: isMobile ? 13 : 14, fontWeight: 700, color: c.ink }}>Action Required</span>
             </div>
+            <span style={{ fontSize: 10, color: c.textFaint }}>{PERIOD_LABELS[periodFilter]}</span>
           </div>
-          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Inspections Logged</div>
-          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>
-            {totalInspections}
-          </div>
-          <div style={{ fontSize: 10, color: c.forest, marginTop: 2, fontWeight: 600 }}>
-            {mealsServedCount} Served • {missedMealsCount} Missed
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(2, 1fr)", gap: 8 }}>
+            {([
+              { key: 'kitchen' as const, label: 'Kitchen Not Functional', icon: Flame, count: kitchenNotFunctional.length },
+              { key: 'water' as const, label: 'Water Supply Unavailable', icon: Droplets, count: waterUnavailable.length },
+              { key: 'foodgrain' as const, label: 'Foodgrain Not Delivered', icon: Wheat, count: foodgrainNotDelivered.length },
+              { key: 'meals' as const, label: 'Meals Not Served', icon: UtensilsCrossed, count: mealsNotServed.length },
+            ]).map(item => (
+              <button
+                key={item.key}
+                onClick={() => setOpenDrillDown(item.key)}
+                disabled={item.count === 0}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 12,
+                  border: `1px solid ${item.count > 0 ? '#FCA5A5' : c.line}`,
+                  background: item.count > 0 ? c.terracottaSoft : c.paper,
+                  cursor: item.count > 0 ? "pointer" : "default", textAlign: "left", width: "100%"
+                }}
+              >
+                <item.icon size={16} color={item.count > 0 ? c.terracotta : c.textFaint} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: item.count > 0 ? c.ink : c.textFaint, flex: 1 }}>{item.label}</span>
+                <span style={{ fontSize: 13, fontWeight: 800, color: item.count > 0 ? c.terracotta : c.textFaint }}>{item.count}</span>
+                {item.count > 0 && <ChevronRight size={14} color={c.terracotta} />}
+              </button>
+            ))}
           </div>
         </div>
+      </div>
 
-        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-            <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: "rgba(212,175,55,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <ShieldCheck size={isMobile ? 17 : 20} color={c.gold} />
+      {/* Top 5 — Requiring Attention (3 independently-ranked lists) */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(300px, 1fr))",
+        gap: isMobile ? 12 : 16,
+        marginBottom: isMobile ? 20 : 28
+      }}>
+        {([
+          { key: 'aadhaar' as const, title: 'Top 5 — Lowest Aadhaar Coverage', icon: UserCheck, rows: aadhaarRanked },
+          { key: 'reporting' as const, title: 'Top 5 — Lowest Reporting Compliance', icon: ShieldCheck, rows: reportingRanked },
+          { key: 'issues' as const, title: 'Top 5 — Most Critical Issues', icon: AlertCircle, rows: issuesRanked },
+        ]).map(panel => (
+          <div key={panel.key} style={{ background: c.surface, padding: isMobile ? 14 : 18, borderRadius: 16, border: `1px solid ${c.line}`, boxShadow: shadows.sm, display: "flex", flexDirection: "column" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <panel.icon size={15} color={c.terracotta} />
+                <span style={{ fontSize: 13, fontWeight: 700, color: c.ink }}>{panel.title}</span>
+              </div>
             </div>
-          </div>
-          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Blocks Monitored</div>
-          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>
-            {blocksMonitoredCount} / {INITIAL_BLOCKS.length}
-          </div>
-          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>East Khasi Hills</div>
-        </div>
-
-        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-            <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: "rgba(15,76,58,0.10)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <UserCheck size={isMobile ? 17 : 20} color={c.forest} />
-            </div>
-          </div>
-          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Active Inspectors</div>
-          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: c.ink, letterSpacing: "-0.02em" }}>
-            {activeInspectorsCount}
-          </div>
-          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>{PERIOD_LABELS[periodFilter]}</div>
-        </div>
-
-        <div style={{ background: c.surface, borderRadius: 16, padding: isMobile ? 14 : 20, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-            <div style={{ width: isMobile ? 34 : 40, height: isMobile ? 34 : 40, borderRadius: 10, background: c.terracottaSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <AlertCircle size={isMobile ? 17 : 20} color={c.terracotta} />
-            </div>
-            {reportingGapSchools > 0 && (
-              <span style={{ fontSize: 9, fontWeight: 700, background: c.terracotta, color: "#fff", padding: "2px 6px", borderRadius: 12 }}>
-                Alert
-              </span>
+            {panel.rows.length === 0 ? (
+              <div style={{ fontSize: 12, color: c.textFaint, padding: "10px 0" }}>No schools flagged for this period.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                {panel.rows.slice(0, 5).map((r, idx) => (
+                  <button
+                    key={r.schoolName}
+                    onClick={() => setRankSchoolFocus(r.schoolName)}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 9px", borderRadius: 9, border: `1px solid ${c.line}`, background: c.paper, cursor: "pointer", textAlign: "left", width: "100%" }}
+                  >
+                    <span style={{ width: 18, height: 18, borderRadius: 5, background: "#FFFFFF", border: `1px solid ${c.line}`, fontSize: 10, fontWeight: 800, color: c.textSecondary, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{idx + 1}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: c.ink, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.schoolName}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: c.terracotta, whiteSpace: "nowrap" }}>{r.metricLabel}</span>
+                  </button>
+                ))}
+              </div>
             )}
+            <button
+              onClick={() => setOpenRankList(panel.key)}
+              disabled={panel.rows.length === 0}
+              style={{ marginTop: "auto", padding: "8px 12px", borderRadius: 9, border: `1px solid ${c.line}`, background: "transparent", color: panel.rows.length === 0 ? c.textFaint : c.forest, fontWeight: 700, fontSize: 12, cursor: panel.rows.length === 0 ? "default" : "pointer" }}
+            >
+              View All
+            </button>
           </div>
-          <div style={{ fontSize: isMobile ? 11 : 13, color: c.textSecondary, marginBottom: 2, fontWeight: 500 }}>Reporting Compliance Gap</div>
-          <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 800, color: reportingGapSchools > 0 ? c.terracotta : c.ink, letterSpacing: "-0.02em" }}>
-            {reportingGapSchools}
-          </div>
-          <div style={{ fontSize: 10, color: c.textFaint, marginTop: 2 }}>Schools missing SDSEO/MeghSIMS</div>
-        </div>
+        ))}
       </div>
 
       {/* This Week at a Glance — always trailing 7 days, independent of the period filter above */}
@@ -620,88 +684,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
           </div>
         </div>
 
-        {/* Quick Inspection Prompt Card */}
-        <div style={{
-          background: "linear-gradient(135deg, #0F4C3A 0%, #082C22 100%)",
-          border: "1px solid #082C22",
-          padding: isMobile ? 18 : 24,
-          borderRadius: 18,
-          color: "#ffffff",
-          display: "flex",
-          flexDirection: "column",
-          justifyContent: "space-between",
-          boxShadow: "0 6px 20px rgba(15,76,58,0.22)",
-          position: "relative",
-          overflow: "hidden"
-        }}>
-          <div>
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 14
-            }}>
-              <div style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                background: "rgba(255, 255, 255, 0.18)",
-                border: "1px solid rgba(255,255,255,0.3)",
-                color: "#FFFFFF",
-                padding: "3px 10px",
-                borderRadius: 20,
-                fontSize: 10,
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.08em"
-              }}>
-                <CheckCircle2 size={12} color="#FFFFFF" /> PM Poshan Inspector
-              </div>
-
-              <div style={{
-                width: 48,
-                height: 38,
-                borderRadius: 8,
-                overflow: "hidden",
-                border: "1px solid rgba(255,255,255,0.2)"
-              }}>
-                <img src={pmPoshanBanner} alt="Kitchen illustration" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              </div>
-            </div>
-
-            <h3 style={{ fontSize: isMobile ? 18 : 21, fontWeight: 800, marginBottom: 8, lineHeight: 1.3 }}>
-              Conduct a New Mid-Day Meal Audit
-            </h3>
-            <p style={{ fontSize: 12, color: "rgba(255,255,255,0.82)", lineHeight: 1.45, marginBottom: 16 }}>
-              Log food preparation, take photo evidence, record student headcount, and report supply issues directly.
-            </p>
-          </div>
-
-          <button
-            onClick={onNewInspectionRequested}
-            style={{
-              padding: "12px 16px",
-              borderRadius: 12,
-              background: "#FFFFFF",
-              color: "#0F4C3A",
-              border: "none",
-              fontSize: 13,
-              fontWeight: 800,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-              boxShadow: shadows.sm,
-              width: "100%"
-            }}
-          >
-            Launch Form <ArrowUpRight size={16} />
-          </button>
-        </div>
-
       </div>
 
       {/* Facilities & Reporting Compliance / Top Issues / Trend */}
@@ -743,35 +725,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
           </div>
         </div>
 
-        {/* Top Issues This Period */}
-        <div style={{ background: c.surface, padding: isMobile ? 16 : 24, borderRadius: 18, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div>
-              <h3 style={{ fontSize: isMobile ? 15 : 16, fontWeight: 700, color: c.ink, margin: 0 }}>Top Issues This Period</h3>
-              <p style={{ fontSize: 12, color: c.textSecondary, margin: 0 }}>{PERIOD_LABELS[periodFilter]}</p>
-            </div>
-            <AlertTriangle size={18} color={c.terracotta} />
-          </div>
-          {topIssues.length === 0 ? (
-            <div style={{ fontSize: 13, color: c.textFaint, padding: "12px 0" }}>No issues flagged in this period.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {topIssues.map(([issue, count], idx) => (
-                <div key={issue} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{
-                    width: 22, height: 22, borderRadius: 6, background: c.terracottaSoft, color: c.terracotta,
-                    fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
-                  }}>
-                    {idx + 1}
-                  </div>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: c.ink, flex: 1 }}>{issue}</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: c.textSecondary }}>{count}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
         {/* Inspections Trend — last 8 weeks */}
         <div style={{ background: c.surface, padding: isMobile ? 16 : 24, borderRadius: 18, border: `1px solid ${c.line}`, boxShadow: shadows.sm }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -796,57 +749,6 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
               </div>
             ))}
           </div>
-        </div>
-      </div>
-
-      {/* Weekly Export Tracker */}
-      <div style={{ background: c.surface, padding: isMobile ? 16 : 24, borderRadius: 18, border: `1px solid ${c.line}`, boxShadow: shadows.sm, marginBottom: isMobile ? 20 : 32 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div>
-            <h3 style={{ fontSize: isMobile ? 15 : 16, fontWeight: 700, color: c.ink, margin: 0 }}>Weekly Export Tracker</h3>
-            <p style={{ fontSize: 12, color: c.textSecondary, margin: 0 }}>Last 8 weeks — what's been downloaded so far</p>
-          </div>
-          <FolderDown size={18} color={c.forest} />
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {weeklyExportTracker.map((wk, idx) => (
-            <div key={idx} style={{
-              display: "flex",
-              flexDirection: isMobile ? "column" : "row",
-              alignItems: isMobile ? "flex-start" : "center",
-              justifyContent: "space-between",
-              gap: isMobile ? 6 : 12,
-              padding: "10px 14px",
-              borderRadius: 10,
-              background: idx === 0 ? c.forestSoft : c.paper,
-              border: `1px solid ${c.line}`
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: isMobile ? "auto" : 220 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: c.ink }}>{wk.label}</span>
-                <span style={{ fontSize: 11, color: c.textSecondary }}>{wk.count} inspection{wk.count === 1 ? '' : 's'}</span>
-              </div>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <span style={{
-                  fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20,
-                  display: "inline-flex", alignItems: "center", gap: 5,
-                  background: wk.csvExport ? c.mint : c.line,
-                  color: wk.csvExport ? c.forest : c.textFaint
-                }}>
-                  {wk.csvExport ? <CheckCircle2 size={11} /> : <X size={11} />}
-                  CSV {wk.csvExport ? `– ${new Date(wk.csvExport.exportedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'not exported'}
-                </span>
-                <span style={{
-                  fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 20,
-                  display: "inline-flex", alignItems: "center", gap: 5,
-                  background: wk.photosExport ? c.mint : c.line,
-                  color: wk.photosExport ? c.forest : c.textFaint
-                }}>
-                  {wk.photosExport ? <CheckCircle2 size={11} /> : <X size={11} />}
-                  Photos {wk.photosExport ? `– ${new Date(wk.photosExport.exportedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'not exported'}
-                </span>
-              </div>
-            </div>
-          ))}
         </div>
       </div>
 
@@ -1101,7 +1003,20 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
           padding: 16
         }}>
           <div style={{ position: "relative", maxWidth: 600, width: "100%", background: "#FFFFFF", border: `1px solid ${c.line}`, borderRadius: 16, overflow: "hidden", boxShadow: shadows.md }}>
-            <img src={selectedPhoto.photoUrl} alt="Inspection proof" style={{ width: "100%", height: "auto", display: "block" }} />
+            {photoLoadFailed ? (
+              <div style={{ width: "100%", aspectRatio: "4/3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, background: c.paper }}>
+                <ImageOff size={32} color={c.textFaint} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: c.textSecondary }}>Photo no longer available</span>
+                <span style={{ fontSize: 11, color: c.textFaint, padding: "0 20px", textAlign: "center" }}>It may have been removed from storage. The inspection record itself is unaffected.</span>
+              </div>
+            ) : (
+              <img
+                src={selectedPhoto.photoUrl}
+                alt="Inspection proof"
+                style={{ width: "100%", height: "auto", display: "block" }}
+                onError={() => setPhotoLoadFailed(true)}
+              />
+            )}
             <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: `1px solid ${c.line}` }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: c.ink }}>{selectedPhoto.schoolName}</div>
@@ -1150,148 +1065,45 @@ export function Dashboard({ inspections, onNewInspectionRequested, onDataChanged
         </div>
       )}
 
-      {/* Manage / Clear Data Modal */}
-      {showClearModal && (
-        <div
-          onClick={() => !clearing && setShowClearModal(false)}
-          style={{
-            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            zIndex: 1000, padding: 20
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: c.surface, borderRadius: 18, padding: isMobile ? 20 : 28,
-              maxWidth: 460, width: "100%", boxShadow: shadows.md
-            }}
-          >
-            <h3 style={{ fontSize: 17, fontWeight: 800, color: c.ink, margin: "0 0 4px" }}>Manage Data</h3>
-            <p style={{ fontSize: 12, color: c.textSecondary, margin: "0 0 18px" }}>
-              This affects the shared Supabase project for everyone. Export first if you haven't already.
-            </p>
+      {/* Schools Inspected / Action Required drill-down */}
+      {openDrillDown && (
+        <DrillDownModal
+          open={!!openDrillDown}
+          onClose={() => setOpenDrillDown(null)}
+          title={DRILL_DOWN_CONFIG[openDrillDown].title}
+          subtitle={DRILL_DOWN_CONFIG[openDrillDown].subtitle}
+          records={DRILL_DOWN_CONFIG[openDrillDown].records}
+          columns={DRILL_DOWN_CONFIG[openDrillDown].columns}
+          exportFilenameBase={DRILL_DOWN_CONFIG[openDrillDown].filename}
+          accentColor={DRILL_DOWN_CONFIG[openDrillDown].accent}
+        />
+      )}
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
-              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", padding: 10, borderRadius: 10, border: `1px solid ${clearMode === 'photos' ? c.forest : c.line}`, background: clearMode === 'photos' ? c.forestSoft : c.paper }}>
-                <input type="radio" checked={clearMode === 'photos'} onChange={() => setClearMode('photos')} style={{ marginTop: 3 }} />
-                <span>
-                  <span style={{ display: "block", fontWeight: 700, fontSize: 13, color: c.ink }}>Delete Photos Only</span>
-                  <span style={{ display: "block", fontSize: 12, color: c.textSecondary }}>Frees up storage. Inspection records, checklist answers, and CSV history all stay intact — just the photo files are removed.</span>
-                </span>
-              </label>
-              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", padding: 10, borderRadius: 10, border: `1px solid ${clearMode === 'all' ? c.terracotta : c.line}`, background: clearMode === 'all' ? c.terracottaSoft : c.paper }}>
-                <input type="radio" checked={clearMode === 'all'} onChange={() => setClearMode('all')} style={{ marginTop: 3 }} />
-                <span>
-                  <span style={{ display: "block", fontWeight: 700, fontSize: 13, color: c.ink }}>Delete Everything</span>
-                  <span style={{ display: "block", fontSize: 12, color: c.textSecondary }}>Removes inspection records and photos in the range below. This also affects Month/Quarter/Year filters and trend charts for that period.</span>
-                </span>
-              </label>
-            </div>
+      {/* Top 5 — full ranked list */}
+      {openRankList && (
+        <SchoolRankModal
+          open={!!openRankList}
+          onClose={() => setOpenRankList(null)}
+          title={RANK_CONFIG[openRankList].title}
+          subtitle={RANK_CONFIG[openRankList].subtitle}
+          metricColumnLabel={RANK_CONFIG[openRankList].metricColumnLabel}
+          rows={RANK_CONFIG[openRankList].rows}
+          exportFilenameBase={RANK_CONFIG[openRankList].filename}
+          onSelectSchool={(schoolName) => { setOpenRankList(null); setRankSchoolFocus(schoolName); }}
+        />
+      )}
 
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: c.textSecondary, marginBottom: 8 }}>Date range (leave blank for all time)</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <input
-                  type="date"
-                  value={clearStart}
-                  max={clearEnd || undefined}
-                  onChange={(e) => setClearStart(e.target.value)}
-                  style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${c.line}`, fontSize: 12, color: c.ink, background: c.paper, flex: 1, minWidth: 130 }}
-                />
-                <span style={{ fontSize: 12, color: c.textFaint }}>to</span>
-                <input
-                  type="date"
-                  value={clearEnd}
-                  min={clearStart || undefined}
-                  onChange={(e) => setClearEnd(e.target.value)}
-                  style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${c.line}`, fontSize: 12, color: c.ink, background: c.paper, flex: 1, minWidth: 130 }}
-                />
-              </div>
-              {!clearStart && !clearEnd && (
-                <div style={{ fontSize: 11, color: c.terracotta, marginTop: 8, fontWeight: 600 }}>
-                  No dates selected — this will affect ALL {clearMode === 'photos' ? 'photos' : 'inspections and photos'}, for all time.
-                </div>
-              )}
-            </div>
-
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: c.textSecondary, marginBottom: 8 }}>Delete password</div>
-              <input
-                type="password"
-                value={deletePassword}
-                onChange={(e) => { setDeletePassword(e.target.value); setDeletePasswordError(null); }}
-                placeholder="Enter delete password to confirm"
-                style={{
-                  width: "100%", padding: "10px 12px", borderRadius: 10,
-                  border: `1.5px solid ${deletePasswordError ? c.terracotta : c.line}`,
-                  fontSize: 13, color: c.ink, background: c.paper, boxSizing: "border-box"
-                }}
-              />
-              {deletePasswordError && (
-                <div style={{ fontSize: 11, color: c.terracotta, marginTop: 6, fontWeight: 600 }}>{deletePasswordError}</div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <button
-                onClick={() => { setShowClearModal(false); setDeletePassword(''); setDeletePasswordError(null); }}
-                disabled={clearing}
-                style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${c.line}`, background: c.paper, color: c.ink, fontWeight: 600, cursor: clearing ? "wait" : "pointer" }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  if (!deletePassword) {
-                    setDeletePasswordError('Delete password is required.');
-                    return;
-                  }
-                  const rangeText = clearStart || clearEnd
-                    ? `from ${clearStart || 'the beginning'} to ${clearEnd || 'now'}`
-                    : 'for ALL TIME';
-                  const what = clearMode === 'photos' ? 'photo files' : 'inspection records AND photo files';
-                  const proceed = window.confirm(`Delete ${what} ${rangeText}? This cannot be undone.`);
-                  if (!proceed) return;
-
-                  setClearing(true);
-                  setDeletePasswordError(null);
-                  try {
-                    const startISO = clearStart || null;
-                    const endISO = clearEnd || null;
-                    let count = 0;
-                    if (clearMode === 'photos') {
-                      count = await clearPhotosInRange(startISO, endISO, deletePassword);
-                    } else if (!startISO && !endISO) {
-                      // Full wipe, all time — reuses the original full-reset behavior (also clears schools + reloads)
-                      await clearAllData(deletePassword);
-                      return; // clearAllData reloads the page itself
-                    } else {
-                      count = await clearDataInRange(startISO, endISO, deletePassword);
-                    }
-                    setShowClearModal(false);
-                    setDeletePassword('');
-                    onDataChanged();
-                    alert(`Done — ${count} item${count === 1 ? '' : 's'} deleted.`);
-                  } catch (e) {
-                    const msg = e instanceof Error ? e.message : 'Could not delete. Please try again.';
-                    if (msg.toLowerCase().includes('incorrect delete password')) {
-                      setDeletePasswordError(msg);
-                    } else {
-                      alert(msg);
-                    }
-                  } finally {
-                    setClearing(false);
-                  }
-                }}
-                disabled={clearing}
-                style={{ padding: "10px 18px", borderRadius: 10, border: "none", background: c.terracotta, color: "#fff", fontWeight: 700, cursor: clearing ? "wait" : "pointer" }}
-              >
-                {clearing ? "Deleting..." : "Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* One school's records, reached by clicking into a Top 5 rank list */}
+      {rankSchoolFocus && (
+        <DrillDownModal
+          open={!!rankSchoolFocus}
+          onClose={() => setRankSchoolFocus(null)}
+          title={rankSchoolFocus}
+          subtitle={`${PERIOD_LABELS[periodFilter]} • ${rankSchoolRecords.length} inspection${rankSchoolRecords.length === 1 ? '' : 's'}`}
+          records={rankSchoolRecords}
+          columns={mealsNotServedColumns}
+          exportFilenameBase={`School_${rankSchoolFocus.replace(/[^a-zA-Z0-9]+/g, '_')}`}
+        />
       )}
 
     </div>
