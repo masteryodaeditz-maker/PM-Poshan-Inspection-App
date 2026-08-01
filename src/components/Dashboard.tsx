@@ -4,11 +4,12 @@ import {
   Filter, Search, CheckCircle2, X, Calendar,
   Building2, Camera, ShieldCheck, FolderDown, LayoutGrid,
   UserCheck, AlertTriangle, AlertCircle, BarChart3, ChevronRight,
-  Droplets, Wheat, UtensilsCrossed, Flame, ImageOff
+  Droplets, Wheat, UtensilsCrossed, Flame, ImageOff, FileText
 } from 'lucide-react';
 import { InspectionRecord, BlockName, ExportLogEntry, ExportType } from '../types';
 import { INITIAL_BLOCKS } from '../data/mockData';
 import { exportInspectionsXLSX, downloadInspectionPhoto, exportPhotosZip, getExportLog } from '../utils/storage';
+import { exportInspectionsPDF } from '../utils/pdfReport';
 import { SchoolDirectory } from './SchoolDirectory';
 import { DrillDownModal, DrillDownColumn } from './DrillDownModal';
 import { SchoolRankModal, SchoolRankRow } from './SchoolRankModal';
@@ -51,6 +52,7 @@ export function Dashboard({ inspections, onDataChanged }: DashboardProps) {
   const [selectedPhoto, setSelectedPhoto] = useState<InspectionRecord | null>(null);
   const [photoLoadFailed, setPhotoLoadFailed] = useState(false);
   const [exportingZip, setExportingZip] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
   const [periodFilter, setPeriodFilter] = useState<'7d' | '30d' | '90d' | '12m' | 'all' | 'custom'>('all');
   const [customStart, setCustomStart] = useState<string>('');
   const [customEnd, setCustomEnd] = useState<string>('');
@@ -353,6 +355,52 @@ export function Dashboard({ inspections, onDataChanged }: DashboardProps) {
             }}
           >
             <Download size={15} /> Export Excel
+          </button>
+
+          <button
+            onClick={async () => {
+              const rangeText = periodRangeStartISO || periodRangeEndISO
+                ? `from ${periodRangeStartISO || 'the beginning'} to ${periodRangeEndISO || 'now'}`
+                : 'for all time';
+              const blockText = selectedBlock !== 'All' ? `, Block: ${selectedBlock}` : '';
+              const proceed = window.confirm(
+                `Export ${filteredInspections.length} inspections as a PDF report ${rangeText}${blockText}?`
+              );
+              if (!proceed) return;
+              setExportingPDF(true);
+              try {
+                await exportInspectionsPDF(
+                  filteredInspections,
+                  { start: periodRangeStartISO, end: periodRangeEndISO },
+                  selectedBlock !== 'All' ? `${selectedBlock} Block` : undefined
+                );
+                getExportLog().then(setExportLog).catch(() => {});
+              } catch (e) {
+                alert(e instanceof Error ? e.message : 'Could not generate the PDF report. Please try again.');
+              } finally {
+                setExportingPDF(false);
+              }
+            }}
+            disabled={exportingPDF}
+            style={{
+              flex: isMobile ? 1 : "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              padding: isMobile ? "10px 12px" : "10px 16px",
+              background: c.surface,
+              border: `1px solid ${c.line}`,
+              borderRadius: 10,
+              cursor: exportingPDF ? "wait" : "pointer",
+              boxShadow: shadows.sm,
+              color: c.ink,
+              fontWeight: 600,
+              fontSize: 13,
+              whiteSpace: "nowrap"
+            }}
+          >
+            <FileText size={15} /> {exportingPDF ? "Generating PDF..." : "Export PDF"}
           </button>
 
           <button

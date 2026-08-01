@@ -89,7 +89,7 @@ export interface BlockStat {
   studentsServedToday: number;
 }
 
-export type ExportType = 'csv' | 'xlsx' | 'photos';
+export type ExportType = 'csv' | 'xlsx' | 'pdf' | 'photos';
 
 export interface ExportLogEntry {
   id: string;

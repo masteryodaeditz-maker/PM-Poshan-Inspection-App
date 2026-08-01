@@ -4,9 +4,10 @@
 // a signed session token that Postgres itself verifies via RLS.
 //
 // Two fixed accounts exist (see SECURITY_SETUP.md for how to create/change them
-// in the Supabase dashboard):
+// in the Supabase dashboard — the admin's email is intentionally not written
+// here or anywhere else in source, to avoid exposing a named phishing target):
 //   - Officer: shared login, can only submit inspections
-//   - Admin:   masteryodaeditz@gmail.com, full dashboard + delete access
+//   - Admin:   full dashboard + delete access
 //
 // There is no public sign-up flow. Officers all share one Supabase Auth user
 // under the hood (a fixed internal email) — that's a deliberate simplicity

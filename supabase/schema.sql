@@ -184,9 +184,15 @@ create policy "read own profile" on profiles
   for select using (id = auth.uid());
 
 -- 5. Storage bucket for inspection photos (private; the app generates signed URLs to view/download)
-insert into storage.buckets (id, name, public)
-values ('inspection-photos', 'inspection-photos', false)
-on conflict (id) do nothing;
+-- file_size_limit / allowed_mime_types are enforced by Postgres itself, not just the
+-- browser — the frontend already compresses photos to JPEG under ~1280px before upload,
+-- but without these, someone with valid officer credentials calling the Storage API
+-- directly (Postman/curl, bypassing the app) could otherwise upload any file type/size.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('inspection-photos', 'inspection-photos', false, 5242880, array['image/jpeg', 'image/png', 'image/webp'])
+on conflict (id) do update set
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists "anon full access inspection photos" on storage.objects;
 drop policy if exists "officer upload photos" on storage.objects;
