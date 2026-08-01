@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ClipboardCheck, LayoutDashboard, Plus, LogOut } from 'lucide-react';
 import { AppRole } from '../utils/supabaseAuth';
-import pmPoshanLogo from '../assets/images/pm_poshan_logo.png';
+import pmPoshanLogo from '../assets/images/pm_poshan_logo_icon.png';
 
 interface HeaderProps {
   activeTab: 'inspection' | 'dashboard';
@@ -60,8 +60,8 @@ export function Header({ activeTab, setActiveTab, role, onLogout }: HeaderProps)
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{
-            width: isMobile ? 36 : 40,
-            height: isMobile ? 36 : 40,
+            width: isMobile ? 42 : 48,
+            height: isMobile ? 42 : 48,
             borderRadius: 10,
             background: "#FFFFFF",
             border: "1px solid #E2E8F0",
@@ -71,7 +71,7 @@ export function Header({ activeTab, setActiveTab, role, onLogout }: HeaderProps)
             boxShadow: "0 3px 10px rgba(15,76,58,0.15)",
             flexShrink: 0,
             overflow: "hidden",
-            padding: 4,
+            padding: 2,
             boxSizing: "border-box"
           }}>
             <img src={pmPoshanLogo} alt="PM POSHAN" style={{ width: "100%", height: "100%", objectFit: "contain" }} />

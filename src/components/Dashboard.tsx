@@ -686,7 +686,7 @@ export function Dashboard({ inspections, onDataChanged }: DashboardProps) {
 
       </div>
 
-      {/* Facilities & Reporting Compliance / Top Issues / Trend */}
+      {/* Facilities & Reporting Compliance / Trend */}
       <div style={{
         display: "grid",
         gridTemplateColumns: isMobile ? "1fr" : "repeat(auto-fit, minmax(320px, 1fr))",
