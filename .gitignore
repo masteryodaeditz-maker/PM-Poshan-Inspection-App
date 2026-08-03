@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Real environment file — contains your actual Supabase URL/key.
+# .env.example (committed) is the template; .env.local is yours only.
+.env.local
+.env
+
+# Editor/OS junk
+.DS_Store
+.vscode/
